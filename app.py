@@ -1,10 +1,22 @@
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Tree, Label, Log, Button, SelectionList, Input, ProgressBar, Static, Checkbox
+from textual.containers import Container, Horizontal, Vertical, Grid
+from textual.screen import ModalScreen
+from textual.worker import Worker, get_current_worker
+from textual import on, work, events
+from textual.message import Message
+from textual.reactive import reactive
+
+import os
+import time
 import shutil
 import tempfile
 import zipfile
+import requests
+from internxt_client import InternxtClient
+from sync_logic import SyncEngine
 
-# ... existing imports ...
+# --- Screens ---
 
 class SyncOptionsScreen(ModalScreen):
     """Screen to configure sync options."""
