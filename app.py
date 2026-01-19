@@ -314,7 +314,7 @@ class InternxtSyncApp(App):
         self.query_one("#right_pane_tree").is_remote = True
         self.query_one("#right_pane_tree").app_ref = self
 
-        # Load local immediately
+        # Load local immediately - runs in a worker thread
         self.refresh_local(self.local_path)
 
         self.log_message("Checking Internxt status...")
@@ -326,8 +326,14 @@ class InternxtSyncApp(App):
     def after_login(self, should_login):
         if should_login:
             self.client.login()
-            self.notify("Please complete login in browser.", severity="warning")
-            self.start_webdav_and_load()
+            # Wait a bit for login process
+            time.sleep(2)
+            if self.client.check_login():
+                self.notify("Login successful.")
+                self.start_webdav_and_load()
+            else:
+                self.notify("Login might have failed or is incomplete. Check browser.", severity="warning")
+                self.start_webdav_and_load() # Try anyway
         else:
             self.exit()
 
@@ -436,21 +442,22 @@ class InternxtSyncApp(App):
 
     # --- Tree Population ---
 
+    @work(thread=True)
     def refresh_local(self, path):
         self.local_path = path
-        self.query_one("#left_pane_input").value = path
+        self.call_from_thread(self.update_local_input, path)
         tree = self.query_one("#left_pane_tree")
         progress = self.query_one("#left_pane_progress")
         stats_label = self.query_one("#left_pane_stats")
         
-        stats_label.update("Loading local...")
-        tree.clear()
-        progress.update(total=100, progress=10)
+        self.call_from_thread(stats_label.update, "Loading local...")
+        self.call_from_thread(tree.clear)
+        self.call_from_thread(progress.update, total=100, progress=10)
         
         # Add ".."
         parent = os.path.dirname(path)
         if parent != path: # Not root
-            tree.root.add("..", data={"type": "dir", "path": parent, "is_up": True})
+            self.call_from_thread(tree.root.add, "..", data={"type": "dir", "path": parent, "is_up": True})
 
         try:
             entries = list(os.scandir(path))
@@ -458,7 +465,7 @@ class InternxtSyncApp(App):
             files = []
             total_size = 0
             
-            progress.update(progress=50)
+            self.call_from_thread(progress.update, progress=50)
             for entry in entries:
                 if entry.is_dir():
                     dirs.append(entry)
@@ -470,20 +477,23 @@ class InternxtSyncApp(App):
             files.sort(key=lambda e: e.name.lower())
 
             for d in dirs:
-                tree.root.add(f"📁 {d.name}", data={"type": "dir", "path": d.path, "is_up": False}, allow_expand=False)
+                self.call_from_thread(tree.root.add, f"📁 {d.name}", data={"type": "dir", "path": d.path, "is_up": False}, allow_expand=False)
             for f in files:
-                tree.root.add(f"📄 {f.name} ({self._format_size(f.stat().st_size)})", data={"type": "file", "path": f.path}, allow_expand=False)
+                self.call_from_thread(tree.root.add, f"📄 {f.name} ({self._format_size(f.stat().st_size)})", data={"type": "file", "path": f.path}, allow_expand=False)
                 
-            tree.root.expand()
-            stats_label.update(f"Files: {len(files)} | Size: {self._format_size(total_size)}")
-            progress.update(progress=100)
+            self.call_from_thread(tree.root.expand)
+            self.call_from_thread(stats_label.update, f"Files: {len(files)} | Size: {self._format_size(total_size)}")
+            self.call_from_thread(progress.update, progress=100)
             # Reset progress bar after a short delay
             def reset_progress():
                 progress.update(progress=0)
             self.call_from_thread(self.set_timer, 1.0, reset_progress)
         except Exception as e:
             self.log_message(f"Local Error: {e}")
-            progress.update(progress=0)
+            self.call_from_thread(progress.update, progress=0)
+
+    def update_local_input(self, path):
+        self.query_one("#left_pane_input").value = path
 
     @work(thread=True)
     def refresh_remote(self, path):
