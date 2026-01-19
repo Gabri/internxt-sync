@@ -271,11 +271,40 @@ class InternxtClient:
 
     def upload_file(self, local_path, remote_path):
         if self.use_cli:
-            # CLI upload-file [file] [folder_id]
             folder_path = os.path.dirname(remote_path)
             folder_id = self._get_folder_id(folder_path)
-            cmd = ["internxt", "upload-file", local_path, folder_id]
-            subprocess.run(cmd, capture_output=True)
+            
+            if folder_id is None:
+                # Try to resolve by listing (maybe it was just created but cache not updated? 
+                # actually list_remote_cli updates cache, so calling it on parent helps)
+                try:
+                    self.list_remote_cli(folder_path)
+                    folder_id = self._get_folder_id(folder_path)
+                except:
+                    pass
+            
+            if folder_id is None:
+                raise Exception(f"Upload failed: Destination folder '{folder_path}' not found/resolved.")
+
+            cmd_folder_id = folder_id if folder_id else ""
+            
+            cmd = ["internxt", "upload-file", "--json", "-x", "-f", local_path, "-i", cmd_folder_id]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                 raise Exception(f"Upload Error (code {result.returncode}): {result.stderr or result.stdout}")
+            
+            try:
+                data = json.loads(result.stdout)
+                if not data.get("success"):
+                     raise Exception(f"Upload Failed: {data.get('message')}")
+                # Optionally cache the file ID if returned
+                if "file" in data and "uuid" in data["file"]:
+                     self.folder_id_cache[f"FILE:{remote_path}"] = data["file"]["uuid"]
+            except json.JSONDecodeError:
+                 # If not JSON, assume success if returncode 0? No, we asked for JSON.
+                 raise Exception(f"Upload JSON Error: {result.stdout}")
+
         else:
             url = f"{self.webdav_url}{quote(remote_path)}"
             with open(local_path, 'rb') as f:
@@ -285,9 +314,36 @@ class InternxtClient:
         if self.use_cli:
             parent_path = os.path.dirname(remote_path)
             name = os.path.basename(remote_path)
+            
             parent_id = self._get_folder_id(parent_path)
-            cmd = ["internxt", "create-folder", name, parent_id]
-            subprocess.run(cmd, capture_output=True)
+            if parent_id is None:
+                 # Try list parent
+                 try:
+                    self.list_remote_cli(parent_path)
+                    parent_id = self._get_folder_id(parent_path)
+                 except:
+                    pass
+            
+            if parent_id is None:
+                 raise Exception(f"Create Dir Failed: Parent '{parent_path}' not found.")
+
+            cmd_parent_id = parent_id if parent_id else ""
+            
+            cmd = ["internxt", "create-folder", "--json", "-x", "-n", name, "-i", cmd_parent_id]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                 raise Exception(f"Create Folder Error: {result.stderr or result.stdout}")
+            
+            try:
+                data = json.loads(result.stdout)
+                if data.get("success"):
+                    if "folder" in data and "uuid" in data["folder"]:
+                        self.folder_id_cache[remote_path] = data["folder"]["uuid"]
+                else:
+                    raise Exception(f"Create Folder Failed: {data.get('message')}")
+            except Exception as e:
+                raise Exception(f"Create Folder JSON Error: {e} | Output: {result.stdout}")
         else:
             url = f"{self.webdav_url}{quote(remote_path)}"
             requests.request("MKCOL", url, verify=False)
