@@ -193,7 +193,6 @@ class InternxtSyncApp(App):
         background: #2d2d2d;
         color: #cccccc;
         height: 1;
-        content-align: left middle;
     }
     Input:focus {
         border: none;
@@ -211,12 +210,18 @@ class InternxtSyncApp(App):
         width: 1fr;
     }
     ProgressBar {
-        width: 20;
+        width: 30%;
         height: 1;
         margin-left: 1;
     }
     ProgressBar > .bar--bar {
         background: #007acc;
+    }
+    ProgressBar > .bar--complete {
+        background: #4caf50;
+    }
+    ProgressBar > .bar--background {
+        background: #333333;
     }
     Log {
         height: 20%;
@@ -224,8 +229,8 @@ class InternxtSyncApp(App):
         border-top: solid #333333;
         background: #1e1e1e;
         color: #cccccc;
-        can-focus: false;
     }
+
     """
 
     BINDINGS = [
@@ -262,9 +267,10 @@ class InternxtSyncApp(App):
 
 
     def on_mount(self):
-        # Disable direct focus on inputs
+        # Disable direct focus on inputs and log
         self.query_one("#left_pane_input").can_focus = False
         self.query_one("#right_pane_input").can_focus = False
+        self.query_one("#app_log").can_focus = False
 
         # Configure trees
         self.query_one("#left_pane_tree").is_remote = False
@@ -432,9 +438,10 @@ class InternxtSyncApp(App):
             tree.root.expand()
             stats_label.update(f"Files: {len(files)} | Size: {self._format_size(total_size)}")
             progress.update(progress=100)
-            # Reset progress bar
-            time.sleep(0.5)
-            progress.update(progress=0)
+            # Reset progress bar after a short delay
+            def reset_progress():
+                progress.update(progress=0)
+            self.set_timer(1.0, reset_progress)
         except Exception as e:
             self.log_message(f"Local Error: {e}")
             progress.update(progress=0)
@@ -451,9 +458,10 @@ class InternxtSyncApp(App):
             items = self.client.list_remote(path)
             self.call_from_thread(progress.update, progress=100)
             self.call_from_thread(self.populate_remote_tree, path, items)
-            # Reset progress after a short delay or just leave at 100
-            time.sleep(0.5)
-            self.call_from_thread(progress.update, progress=0)
+            
+            def reset_progress():
+                progress.update(progress=0)
+            self.set_timer(1.0, reset_progress)
         except Exception as e:
             self.log_message(f"Remote List Error: {e}")
             self.call_from_thread(stats_label.update, "Error loading remote.")

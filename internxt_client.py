@@ -94,7 +94,11 @@ class InternxtClient:
             if folder_id is None:
                 raise Exception(f"Could not resolve folder ID for path: {path}")
             
-            cmd = ["internxt", "list", "--json", "-x", "-i", folder_id]
+            # Use empty string for root, otherwise the UUID
+            cmd_id = folder_id if folder_id else ""
+            
+            cmd = ["internxt", "list", "--json", "-x", "-i", cmd_id]
+            # print(f"Running command: {' '.join(cmd)}")
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
                 raise Exception(f"CLI Error (code {result.returncode}): {result.stderr or result.stdout}")
@@ -113,7 +117,8 @@ class InternxtClient:
                 name = f.get("plainName") or f.get("name")
                 item_path = os.path.join(path, name).replace("\\", "/")
                 # Use UUID for CLI operations
-                self.folder_id_cache[item_path] = str(f["uuid"])
+                uuid = f.get("uuid") or str(f.get("id"))
+                self.folder_id_cache[item_path] = uuid
                 items.append({
                     'name': name,
                     'is_dir': True,
@@ -125,7 +130,8 @@ class InternxtClient:
                 name = f.get("plainName") or f.get("name")
                 item_path = os.path.join(path, name).replace("\\", "/")
                 # Use UUID for CLI operations
-                self.folder_id_cache[f"FILE:{item_path}"] = str(f["uuid"])
+                uuid = f.get("uuid") or str(f.get("id"))
+                self.folder_id_cache[f"FILE:{item_path}"] = uuid
                 items.append({
                     'name': name,
                     'is_dir': False,
@@ -135,6 +141,7 @@ class InternxtClient:
             return items
         except Exception as e:
             raise Exception(f"list_remote_cli('{path}') failed: {str(e)}")
+
 
     def download_file(self, remote_path, local_path):
         if self.use_cli:
@@ -228,10 +235,15 @@ class InternxtClient:
                     is_collection = False
                     if resourcetype is not None:
                         # Check for <d:collection/> or <collection/>
+                        # Some servers use {DAV:}collection
                         if resourcetype.find('d:collection', namespaces) is not None or \
                            resourcetype.find('collection', namespaces) is not None or \
                            resourcetype.find('{DAV:}collection') is not None:
                             is_collection = True
+                    
+                    # Fallback: if href ends with / it's usually a directory
+                    if not is_collection and href.endswith("/"):
+                        is_collection = True
                     
                     getcontentlength = prop.find('d:getcontentlength', namespaces)
                     size = int(getcontentlength.text) if getcontentlength is not None and getcontentlength.text else 0
