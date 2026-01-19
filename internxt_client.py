@@ -10,7 +10,7 @@ class InternxtClient:
     def __init__(self, webdav_url="https://127.0.0.1:3005"):
         self.webdav_url = webdav_url
         self.webdav_process = None
-        self.use_cli = False
+        self.use_cli = True
         self.folder_id_cache = {"/": ""} # path -> id
         # Disable warnings for self-signed certs
         requests.packages.urllib3.disable_warnings()
@@ -89,44 +89,51 @@ class InternxtClient:
 
     def list_remote_cli(self, path="/"):
         """Lists files using CLI."""
-        folder_id = self._get_folder_id(path)
-        if folder_id is None:
-            return None
-        
-        cmd = ["internxt", "list", "--json", "-x", "-i", folder_id]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise Exception(f"CLI Error: {result.stderr}")
-        
-        data = json.loads(result.stdout)
-        if not data.get("success"):
-            raise Exception(f"CLI Error: {data.get('message')}")
-        
-        items = []
-        # Folders
-        for f in data["list"].get("folders", []):
-            name = f["plainName"]
-            item_path = os.path.join(path, name).replace("\\", "/")
-            self.folder_id_cache[item_path] = str(f["id"])
-            items.append({
-                'name': name,
-                'is_dir': True,
-                'size': 0,
-                'path': item_path
-            })
-        # Files
-        for f in data["list"].get("files", []):
-            name = f["plainName"]
-            item_path = os.path.join(path, name).replace("\\", "/")
-            # Store file ID in cache too, but maybe with a prefix or separate cache
-            self.folder_id_cache[f"FILE:{item_path}"] = str(f["id"])
-            items.append({
-                'name': name,
-                'is_dir': False,
-                'size': f.get("size", 0),
-                'path': item_path
-            })
-        return items
+        try:
+            folder_id = self._get_folder_id(path)
+            if folder_id is None:
+                raise Exception(f"Could not resolve folder ID for path: {path}")
+            
+            cmd = ["internxt", "list", "--json", "-x", "-i", folder_id]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise Exception(f"CLI Error (code {result.returncode}): {result.stderr or result.stdout}")
+            
+            try:
+                data = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                raise Exception(f"CLI returned invalid JSON: {result.stdout}")
+
+            if not data.get("success"):
+                raise Exception(f"CLI Error: {data.get('message', 'Unknown error')}")
+            
+            items = []
+            # Folders
+            for f in data["list"].get("folders", []):
+                name = f.get("plainName") or f.get("name")
+                item_path = os.path.join(path, name).replace("\\", "/")
+                self.folder_id_cache[item_path] = str(f["id"])
+                items.append({
+                    'name': name,
+                    'is_dir': True,
+                    'size': 0,
+                    'path': item_path
+                })
+            # Files
+            for f in data["list"].get("files", []):
+                name = f.get("plainName") or f.get("name")
+                item_path = os.path.join(path, name).replace("\\", "/")
+                self.folder_id_cache[f"FILE:{item_path}"] = str(f["id"])
+                items.append({
+                    'name': name,
+                    'is_dir': False,
+                    'size': f.get("size", 0),
+                    'path': item_path
+                })
+            return items
+        except Exception as e:
+            # Re-raise with context
+            raise Exception(f"list_remote_cli('{path}') failed: {str(e)}")
 
     def download_file(self, remote_path, local_path):
         if self.use_cli:

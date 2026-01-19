@@ -175,27 +175,31 @@ class InternxtSyncApp(App):
         background: #1e1e1e;
     }
     #left_pane:focus-within {
-        border: double #007acc;
+        border: solid #007acc;
     }
     #right_pane:focus-within {
-        border: double #007acc;
+        border: solid #007acc;
     }
     Input {
         dock: top;
-        margin-bottom: 0;
+        margin: 0;
+        padding: 0 1;
         border: none;
         background: #2d2d2d;
         color: #cccccc;
-        height: 3;
+        height: 1;
     }
     Input:focus {
-        border: solid #007acc;
+        border: none;
+        background: #3d3d3d;
+        color: #ffffff;
     }
     .pane_footer {
         height: 1;
         background: #252526;
         color: #888888;
         padding: 0 1;
+        border-top: solid #333333;
     }
     .pane_footer Label {
         width: 1fr;
@@ -241,7 +245,7 @@ class InternxtSyncApp(App):
             Pane("Remote", id="right_pane")
         )
         with Horizontal(id="app_status_bar"):
-            yield Label("Mode: WebDAV", id="mode_label")
+            yield Label("Mode: CLI", id="mode_label")
             yield Label(" | Press 'm' to toggle CLI/WebDAV", id="mode_hint")
         yield Log()
         yield Footer()
@@ -384,8 +388,9 @@ class InternxtSyncApp(App):
         progress = self.query_one("#left_pane_progress")
         stats_label = self.query_one("#left_pane_stats")
         
+        stats_label.update("Loading local...")
         tree.clear()
-        progress.progress = 0
+        progress.update(total=100, progress=0)
         
         # Add ".."
         parent = os.path.dirname(path)
@@ -415,13 +420,17 @@ class InternxtSyncApp(App):
                 
             tree.root.expand()
             stats_label.update(f"Files: {len(files)} | Size: {self._format_size(total_size)}")
+            progress.update(progress=100)
         except Exception as e:
             self.log_message(f"Local Error: {e}")
+            progress.update(progress=0)
 
     @work(thread=True)
     def refresh_remote(self, path):
         self.call_from_thread(self.update_remote_input, path)
         progress = self.query_one("#right_pane_progress")
+        stats_label = self.query_one("#right_pane_stats")
+        self.call_from_thread(stats_label.update, "Loading remote...")
         self.call_from_thread(progress.update, total=100, progress=10)
         
         try:
@@ -430,6 +439,7 @@ class InternxtSyncApp(App):
             self.call_from_thread(self.populate_remote_tree, path, items)
         except Exception as e:
             self.log_message(f"Remote List Error: {e}")
+            self.call_from_thread(stats_label.update, "Error loading remote.")
             self.call_from_thread(progress.update, progress=0)
 
     def update_remote_input(self, path):
