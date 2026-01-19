@@ -4,11 +4,14 @@ import requests
 import xml.etree.ElementTree as ET
 from urllib.parse import unquote, quote
 import os
+import json
 
 class InternxtClient:
     def __init__(self, webdav_url="https://127.0.0.1:3005"):
         self.webdav_url = webdav_url
         self.webdav_process = None
+        self.use_cli = False
+        self.folder_id_cache = {"/": ""} # path -> id
         # Disable warnings for self-signed certs
         requests.packages.urllib3.disable_warnings()
 
@@ -16,7 +19,7 @@ class InternxtClient:
         """Checks if logged in by running a simple command."""
         try:
             # internxt account info or similar
-            result = subprocess.run(["internxt", "account", "info"], capture_output=True, text=True)
+            result = subprocess.run(["internxt", "whoami"], capture_output=True, text=True)
             return result.returncode == 0
         except FileNotFoundError:
             return False
@@ -51,8 +54,15 @@ class InternxtClient:
     def stop_webdav(self):
         if self.webdav_process:
             self.webdav_process.terminate()
+        subprocess.run(["internxt", "webdav", "disable"], capture_output=True)
 
     def list_remote(self, path="/"):
+        if self.use_cli:
+            return self.list_remote_cli(path)
+        else:
+            return self.list_remote_webdav(path)
+
+    def list_remote_webdav(self, path="/"):
         """
         Lists files in a remote directory using WebDAV PROPFIND.
         Returns a list of dicts: {'name': str, 'is_dir': bool, 'size': int, 'path': str}
@@ -60,10 +70,6 @@ class InternxtClient:
         # Ensure path starts with /
         if not path.startswith("/"):
             path = "/" + path
-        
-        # WebDAV paths need to be URL encoded
-        # path_encoded = quote(path) # request handles some, but let's be careful.
-        # However, WebDAV usually mounts root at /
         
         full_url = f"{self.webdav_url}{quote(path)}"
         
@@ -79,9 +85,95 @@ class InternxtClient:
             
             return self._parse_propfind(response.content, path)
         except Exception as e:
-            # Fallback or error handling
-            # Raising exception to be visible in TUI Log
             raise e
+
+    def list_remote_cli(self, path="/"):
+        """Lists files using CLI."""
+        folder_id = self._get_folder_id(path)
+        if folder_id is None:
+            return None
+        
+        cmd = ["internxt", "list", "--json", "-x", "-i", folder_id]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise Exception(f"CLI Error: {result.stderr}")
+        
+        data = json.loads(result.stdout)
+        if not data.get("success"):
+            raise Exception(f"CLI Error: {data.get('message')}")
+        
+        items = []
+        # Folders
+        for f in data["list"].get("folders", []):
+            name = f["plainName"]
+            item_path = os.path.join(path, name).replace("\\", "/")
+            self.folder_id_cache[item_path] = str(f["id"])
+            items.append({
+                'name': name,
+                'is_dir': True,
+                'size': 0,
+                'path': item_path
+            })
+        # Files
+        for f in data["list"].get("files", []):
+            name = f["plainName"]
+            item_path = os.path.join(path, name).replace("\\", "/")
+            # Store file ID in cache too, but maybe with a prefix or separate cache
+            self.folder_id_cache[f"FILE:{item_path}"] = str(f["id"])
+            items.append({
+                'name': name,
+                'is_dir': False,
+                'size': f.get("size", 0),
+                'path': item_path
+            })
+        return items
+
+    def download_file(self, remote_path, local_path):
+        if self.use_cli:
+            file_id = self.folder_id_cache.get(f"FILE:{remote_path}")
+            if not file_id:
+                # Try to find it by listing parent
+                parent_path = os.path.dirname(remote_path)
+                self.list_remote_cli(parent_path)
+                file_id = self.folder_id_cache.get(f"FILE:{remote_path}")
+            
+            if not file_id:
+                raise Exception(f"Could not find ID for {remote_path}")
+            
+            dest_dir = os.path.dirname(local_path)
+            cmd = ["internxt", "download-file", "-x", "-i", file_id, "-d", dest_dir, "-o"]
+            subprocess.run(cmd, capture_output=True)
+        else:
+            url = f"{self.webdav_url}{quote(remote_path)}"
+            with requests.get(url, stream=True, verify=False) as r:
+                r.raise_for_status()
+                with open(local_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+
+    def _get_folder_id(self, path):
+        """Resolves path to folder ID using cache or traversal."""
+        if path in self.folder_id_cache:
+            return self.folder_id_cache[path]
+        
+        # Traversal
+        parts = [p for p in path.split("/") if p]
+        current_path = "/"
+        current_id = ""
+        
+        for part in parts:
+            # List current_path to find part
+            items = self.list_remote_cli(current_path)
+            found = False
+            for item in items:
+                if item['is_dir'] and item['name'] == part:
+                    current_path = item['path']
+                    current_id = self.folder_id_cache[current_path]
+                    found = True
+                    break
+            if not found:
+                return None
+        return current_id
 
     def _parse_propfind(self, xml_content, current_path):
         """Parses WebDAV XML response."""
@@ -94,9 +186,6 @@ class InternxtClient:
             for response in root.findall('d:response', namespaces):
                 href = response.find('d:href', namespaces).text
                 href = unquote(href)
-                
-                # Normalize href to ensure it matches current path logic
-                # Internxt WebDAV usually mounts at root.
                 
                 # Handle full URL if present (e.g. http://127.0.0.1:3005/folder)
                 if "://" in href:
@@ -113,9 +202,6 @@ class InternxtClient:
                 req_path_clean = current_path.rstrip("/")
                 if req_path_clean == "": req_path_clean = "" # Root handling
 
-                # Debug
-                # print(f"Comparing href='{href}' with req='{req_path_clean}'")
-
                 # If the href matches the requested path, it's the directory itself
                 if href == req_path_clean:
                     continue
@@ -124,12 +210,6 @@ class InternxtClient:
                 if current_path == "/" and href == "":
                     continue
 
-                # Extra check: if href does not start with req_path_clean, it might be unrelated?
-                # WebDAV usually returns children of the requested path.
-                
-                # Handling issue where href might be just the name or relative?
-                # Internxt/WebDAV usually returns absolute paths.
-                
                 propstat = response.find('d:propstat', namespaces)
                 if propstat:
                     prop = propstat.find('d:prop', namespaces)
@@ -156,26 +236,35 @@ class InternxtClient:
         return items
 
     def upload_file(self, local_path, remote_path):
-        """Uploads a file via WebDAV PUT."""
-        url = f"{self.webdav_url}{quote(remote_path)}"
-        with open(local_path, 'rb') as f:
-            requests.put(url, data=f, verify=False)
+        if self.use_cli:
+            # CLI upload-file [file] [folder_id]
+            folder_path = os.path.dirname(remote_path)
+            folder_id = self._get_folder_id(folder_path)
+            cmd = ["internxt", "upload-file", local_path, folder_id]
+            subprocess.run(cmd, capture_output=True)
+        else:
+            url = f"{self.webdav_url}{quote(remote_path)}"
+            with open(local_path, 'rb') as f:
+                requests.put(url, data=f, verify=False)
 
     def create_directory(self, remote_path):
-        """Creates a directory via WebDAV MKCOL."""
-        url = f"{self.webdav_url}{quote(remote_path)}"
-        requests.request("MKCOL", url, verify=False)
+        if self.use_cli:
+            parent_path = os.path.dirname(remote_path)
+            name = os.path.basename(remote_path)
+            parent_id = self._get_folder_id(parent_path)
+            cmd = ["internxt", "create-folder", name, parent_id]
+            subprocess.run(cmd, capture_output=True)
+        else:
+            url = f"{self.webdav_url}{quote(remote_path)}"
+            requests.request("MKCOL", url, verify=False)
 
     def delete_item(self, remote_path):
-        """Deletes via WebDAV DELETE."""
-        url = f"{self.webdav_url}{quote(remote_path)}"
-        requests.delete(url, verify=False)
-        
-    def download_file(self, remote_path, local_path):
-        """Downloads via WebDAV GET."""
-        url = f"{self.webdav_url}{quote(remote_path)}"
-        with requests.get(url, stream=True, verify=False) as r:
-            r.raise_for_status()
-            with open(local_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
+        if self.use_cli:
+            # CLI trash-file or trash-folder
+            subprocess.run(["internxt", "trash-file", remote_path], capture_output=True)
+            subprocess.run(["internxt", "trash-folder", remote_path], capture_output=True)
+        else:
+            url = f"{self.webdav_url}{quote(remote_path)}"
+            requests.delete(url, verify=False)
+
+

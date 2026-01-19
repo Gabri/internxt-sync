@@ -1,10 +1,11 @@
 from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, Tree, Label, Log, Button, SelectionList, Input
-from textual.containers import Container, Horizontal, Vertical
+from textual.widgets import Header, Footer, Tree, Label, Log, Button, SelectionList, Input, ProgressBar, Static
+from textual.containers import Container, Horizontal, Vertical, Grid
 from textual.screen import ModalScreen
 from textual.worker import Worker, get_current_worker
 from textual import on, work, events
 from textual.message import Message
+from textual.reactive import reactive
 
 import os
 import time
@@ -106,30 +107,49 @@ class FileSystemTree(Tree):
                 self.post_message(self.FocusInput(self.id))
                 event.stop()
 
-
-
     class FocusInput(Message):
         def __init__(self, tree_id):
             super().__init__()
             self.tree_id = tree_id
 
+class Pane(Vertical):
+    """A pane containing an input, a tree, and a status bar."""
+    def __init__(self, title, id, **kwargs):
+        super().__init__(id=id, **kwargs)
+        self.title = title
+
+    def compose(self) -> ComposeResult:
+        yield Input(placeholder=self.title, id=f"{self.id}_input")
+        yield FileSystemTree(self.title, id=f"{self.id}_tree")
+        with Horizontal(classes="pane_footer"):
+            yield Label("Files: 0 | Size: 0 B", id=f"{self.id}_stats")
+            yield ProgressBar(id=f"{self.id}_progress", show_eta=False, show_percentage=False)
+
 class InternxtSyncApp(App):
     CSS = """
     Screen {
         layers: base modal;
+        background: #1e1e1e;
+        color: #d4d4d4;
+    }
+    #app_status_bar {
+        height: 1;
+        background: #252526;
+        color: #888888;
+        padding: 0 1;
     }
     .modal_dialog {
         padding: 2;
-        border: solid green;
-        background: $surface;
+        border: solid #3e3e3e;
+        background: #252526;
         width: 60;
         height: auto;
         align: center middle;
     }
     .modal_dialog_large {
         padding: 2;
-        border: solid red;
-        background: $surface;
+        border: solid #3e3e3e;
+        background: #252526;
         width: 80%;
         height: 80%;
         align: center middle;
@@ -141,32 +161,58 @@ class InternxtSyncApp(App):
     }
     Button {
         margin: 1;
+        background: #3e3e42;
+        color: #ffffff;
+        border: none;
+    }
+    Button:hover {
+        background: #4e4e52;
     }
     #left_pane, #right_pane {
         width: 50%;
         height: 100%;
-        border: solid blue;
+        border: solid #333333;
+        background: #1e1e1e;
     }
     #left_pane:focus-within {
-        border: double blue;
+        border: double #007acc;
     }
     #right_pane:focus-within {
-        border: double green;
+        border: double #007acc;
     }
     Input {
         dock: top;
-        margin-bottom: 1;
-        border: transparent;
-        background: $accent;
-        color: $text;
+        margin-bottom: 0;
+        border: none;
+        background: #2d2d2d;
+        color: #cccccc;
+        height: 3;
     }
     Input:focus {
-        border: solid yellow;
+        border: solid #007acc;
+    }
+    .pane_footer {
+        height: 1;
+        background: #252526;
+        color: #888888;
+        padding: 0 1;
+    }
+    .pane_footer Label {
+        width: 1fr;
+    }
+    ProgressBar {
+        width: 20;
+        height: 1;
+    }
+    ProgressBar > .bar--bar {
+        background: #007acc;
     }
     Log {
         height: 20%;
         dock: bottom;
-        border-top: solid $secondary;
+        border-top: solid #333333;
+        background: #1e1e1e;
+        color: #cccccc;
     }
     """
 
@@ -177,6 +223,8 @@ class InternxtSyncApp(App):
         ("d", "download", "Download Remote -> Local"),
         ("r", "refresh", "Refresh View"),
         ("ctrl+l", "focus_path", "Edit Path"),
+        ("z", "calc_size", "Calc Folder Size"),
+        ("m", "toggle_mode", "Toggle CLI/WebDAV"),
     ]
 
     def __init__(self):
@@ -189,27 +237,27 @@ class InternxtSyncApp(App):
     def compose(self) -> ComposeResult:
         yield Header()
         yield Horizontal(
-            Vertical(
-                Input(self.local_path, id="local_input"),
-                FileSystemTree("Local", id="local_tree"),
-                id="left_pane"
-            ),
-            Vertical(
-                Input(self.remote_path, id="remote_input"),
-                FileSystemTree("Remote", id="remote_tree"),
-                id="right_pane"
-            )
+            Pane("Local", id="left_pane"),
+            Pane("Remote", id="right_pane")
         )
+        with Horizontal(id="app_status_bar"):
+            yield Label("Mode: WebDAV", id="mode_label")
+            yield Label(" | Press 'm' to toggle CLI/WebDAV", id="mode_hint")
         yield Log()
         yield Footer()
 
+
     def on_mount(self):
+        # Disable direct focus on inputs
+        self.query_one("#left_pane_input").can_focus = False
+        self.query_one("#right_pane_input").can_focus = False
+
         # Configure trees
-        self.query_one("#local_tree").is_remote = False
-        self.query_one("#local_tree").app_ref = self
+        self.query_one("#left_pane_tree").is_remote = False
+        self.query_one("#left_pane_tree").app_ref = self
         
-        self.query_one("#remote_tree").is_remote = True
-        self.query_one("#remote_tree").app_ref = self
+        self.query_one("#right_pane_tree").is_remote = True
+        self.query_one("#right_pane_tree").app_ref = self
 
         # Load local immediately
         self.refresh_local(self.local_path)
@@ -230,6 +278,11 @@ class InternxtSyncApp(App):
 
     @work(exclusive=True, thread=True)
     def start_webdav_and_load(self):
+        if self.client.use_cli:
+            self.log_message("Using CLI mode.")
+            self.call_from_thread(self.refresh_remote, self.remote_path)
+            return
+
         self.log_message("Checking WebDAV connectivity...")
         
         # Check if already running
@@ -250,74 +303,89 @@ class InternxtSyncApp(App):
                     self.call_from_thread(self.refresh_remote, self.remote_path)
                     break
             except Exception as e:
-                # self.log_message(f"Wait... {e}")
                 time.sleep(1)
                 if i == max_retries - 1:
                     self.log_message("WebDAV timeout. Try refreshing manually (r).")
-        
-    def load_panes(self):
-        # Deprecated: called individually now
-        pass
 
     def on_unmount(self):
-        # We don't stop webdav anymore to allow persistence/speed?
-        # Or we check if we started it.
-        # User requested ensure disabled on exit.
         self.client.stop_webdav()
 
     # --- Actions & Navigation ---
 
     def action_toggle_pane(self):
-        left = self.query_one("#left_pane")
-        right = self.query_one("#right_pane")
+        left = self.query_one("#left_pane_tree")
+        right = self.query_one("#right_pane_tree")
         
-        # Check focus and switch
         if left.has_focus:
-            self.query_one("#remote_tree").focus()
+            right.focus()
         else:
-            self.query_one("#local_tree").focus()
+            left.focus()
 
     def action_focus_path(self):
-        # Focus the input of the active pane
-        if self.query_one("#left_pane").has_focus:
-            self.query_one("#local_input").focus()
+        left_pane = self.query_one("#left_pane")
+        right_pane = self.query_one("#right_pane")
+        
+        if right_pane.has_focus_within:
+            inp = self.query_one("#right_pane_input")
         else:
-            self.query_one("#remote_input").focus()
+            inp = self.query_one("#left_pane_input")
+        
+        inp.can_focus = True
+        inp.focus()
 
     @on(FileSystemTree.FocusInput)
     def on_tree_request_focus(self, message):
-        if message.tree_id == "local_tree":
-            self.query_one("#local_input").focus()
+        if message.tree_id == "left_pane_tree":
+            inp = self.query_one("#left_pane_input")
         else:
-            self.query_one("#remote_input").focus()
+            inp = self.query_one("#right_pane_input")
+        
+        inp.can_focus = True
+        inp.focus()
 
     @on(Input.Submitted)
     def on_path_submit(self, event):
         inp = event.input
         new_path = inp.value
-        if inp.id == "local_input":
+        inp.can_focus = False # Disable focus again after submit
+        
+        if inp.id == "left_pane_input":
             if os.path.exists(new_path) and os.path.isdir(new_path):
                 self.local_path = new_path
                 self.refresh_local(new_path)
-                self.query_one("#local_tree").focus()
+                self.query_one("#left_pane_tree").focus()
             else:
                 self.notify(f"Invalid local directory: {new_path}", severity="error")
-        elif inp.id == "remote_input":
+        elif inp.id == "right_pane_input":
             self.remote_path = new_path
             self.refresh_remote(new_path)
-            self.query_one("#remote_tree").focus()
+            self.query_one("#right_pane_tree").focus()
 
     def action_refresh(self):
         self.refresh_local(self.local_path)
         self.refresh_remote(self.remote_path)
 
+    def action_toggle_mode(self):
+        self.client.use_cli = not self.client.use_cli
+        mode = "CLI" if self.client.use_cli else "WebDAV"
+        self.log_message(f"Switched to {mode} mode.")
+        self.query_one("#mode_label").update(f"Mode: {mode}")
+        if not self.client.use_cli and not self.client.is_webdav_active():
+            self.start_webdav_and_load()
+        else:
+            self.refresh_remote(self.remote_path)
+
     # --- Tree Population ---
 
     def refresh_local(self, path):
         self.local_path = path
-        self.query_one("#local_input").value = path
-        tree = self.query_one("#local_tree")
+        self.query_one("#left_pane_input").value = path
+        tree = self.query_one("#left_pane_tree")
+        progress = self.query_one("#left_pane_progress")
+        stats_label = self.query_one("#left_pane_stats")
+        
         tree.clear()
+        progress.progress = 0
         
         # Add ".."
         parent = os.path.dirname(path)
@@ -325,15 +393,17 @@ class InternxtSyncApp(App):
             tree.root.add("..", data={"type": "dir", "path": parent, "is_up": True})
 
         try:
-            # Sort: Dirs then Files
-            entries = os.scandir(path)
+            entries = list(os.scandir(path))
             dirs = []
             files = []
+            total_size = 0
+            
             for entry in entries:
                 if entry.is_dir():
                     dirs.append(entry)
                 else:
                     files.append(entry)
+                    total_size += entry.stat().st_size
             
             dirs.sort(key=lambda e: e.name.lower())
             files.sort(key=lambda e: e.name.lower())
@@ -341,56 +411,58 @@ class InternxtSyncApp(App):
             for d in dirs:
                 tree.root.add(f"📁 {d.name}", data={"type": "dir", "path": d.path, "is_up": False}, allow_expand=False)
             for f in files:
-                tree.root.add(f"📄 {f.name} ({f.stat().st_size}b)", data={"type": "file", "path": f.path}, allow_expand=False)
+                tree.root.add(f"📄 {f.name} ({self._format_size(f.stat().st_size)})", data={"type": "file", "path": f.path}, allow_expand=False)
                 
             tree.root.expand()
-        except PermissionError:
-            self.notify("Permission Denied", severity="error")
+            stats_label.update(f"Files: {len(files)} | Size: {self._format_size(total_size)}")
         except Exception as e:
             self.log_message(f"Local Error: {e}")
 
     @work(thread=True)
     def refresh_remote(self, path):
-        # Update input immediately for feedback
         self.call_from_thread(self.update_remote_input, path)
+        progress = self.query_one("#right_pane_progress")
+        self.call_from_thread(progress.update, total=100, progress=10)
         
         try:
             items = self.client.list_remote(path)
+            self.call_from_thread(progress.update, progress=100)
+            self.call_from_thread(self.populate_remote_tree, path, items)
         except Exception as e:
             self.log_message(f"Remote List Error: {e}")
-            return
-
-        self.call_from_thread(self.populate_remote_tree, path, items)
+            self.call_from_thread(progress.update, progress=0)
 
     def update_remote_input(self, path):
-        self.query_one("#remote_input").value = path
+        self.query_one("#right_pane_input").value = path
         self.remote_path = path
 
     def populate_remote_tree(self, path, items):
-        tree = self.query_one("#remote_tree")
+        tree = self.query_one("#right_pane_tree")
+        stats_label = self.query_one("#right_pane_stats")
         tree.clear()
         
         # Add ".."
         if path != "/" and path != "":
             parent = os.path.dirname(path.rstrip("/"))
-            if not parent.startswith("/"): parent = "/" + parent # Fix dirname behavior
-            # On windows os.path.dirname("/") might be "/" but let's ensure.
+            if not parent.startswith("/"): parent = "/" + parent
             if parent == "" or parent == "/": parent = "/"
-            
             tree.root.add("..", data={"type": "dir", "path": parent, "is_up": True})
 
+        total_size = 0
+        file_count = 0
         if items:
-            # Sort
             items.sort(key=lambda x: (not x['is_dir'], x['name'].lower()))
-            
             for item in items:
                 name = item['name']
                 if item['is_dir']:
                     tree.root.add(f"📁 {name}", data={"type": "dir", "path": item['path'], "is_up": False}, allow_expand=False)
                 else:
-                    tree.root.add(f"📄 {name} ({item['size']}b)", data={"type": "file", "path": item['path']}, allow_expand=False)
+                    file_count += 1
+                    total_size += item['size']
+                    tree.root.add(f"📄 {name} ({self._format_size(item['size'])})", data={"type": "file", "path": item['path']}, allow_expand=False)
         
         tree.root.expand()
+        stats_label.update(f"Files: {file_count} | Size: {self._format_size(total_size)}")
 
     # --- Interaction ---
 
@@ -398,25 +470,44 @@ class InternxtSyncApp(App):
     def on_node_selected(self, event):
         node = event.node
         data = node.data
-        if not data: return # Root node
+        if not data: return
 
         tree = event.control
-        
         if data["type"] == "dir":
-            # Navigation
             new_path = data["path"]
-            if tree.id == "local_tree":
+            if tree.id == "left_pane_tree":
                 self.refresh_local(new_path)
             else:
                 self.refresh_remote(new_path)
         else:
-            # File Action
-            if tree.id == "remote_tree":
-                # Download
+            if tree.id == "right_pane_tree":
                 self.action_download_item(data["path"])
-            else:
-                # Local File selected - maybe future preview?
-                pass
+
+    def action_calc_size(self):
+        if self.query_one("#left_pane_tree").has_focus:
+            self.run_calc_local_size(self.local_path)
+        else:
+            self.notify("Remote size calculation not implemented yet.", severity="warning")
+
+    @work(thread=True)
+    def run_calc_local_size(self, path):
+        progress = self.query_one("#left_pane_progress")
+        self.call_from_thread(progress.update, total=None) # Indeterminate
+        
+        total_size = 0
+        file_count = 0
+        try:
+            for root, dirs, files in os.walk(path):
+                for f in files:
+                    fp = os.path.join(root, f)
+                    total_size += os.path.getsize(fp)
+                    file_count += 1
+            
+            self.call_from_thread(self.notify, f"Folder Size: {self._format_size(total_size)} ({file_count} files)")
+        except Exception as e:
+            self.log_message(f"Size Calc Error: {e}")
+        finally:
+            self.call_from_thread(progress.update, total=100, progress=100)
 
     def action_download_item(self, remote_path):
         filename = os.path.basename(remote_path)
@@ -478,7 +569,6 @@ class InternxtSyncApp(App):
 
     @work(thread=True)
     def run_sync_execution(self, to_upload, to_create, to_delete, local_root, remote_root):
-        # Create Dirs
         for rel_path in to_create:
             remote_path = os.path.join(remote_root, rel_path).replace("\\", "/") 
             self.log_message(f"Creating dir: {rel_path}")
@@ -487,7 +577,6 @@ class InternxtSyncApp(App):
             except Exception as e:
                 self.log_message(f"Error creating dir {rel_path}: {e}")
 
-        # Uploads
         for abs_path, rel_path in to_upload:
             remote_path = os.path.join(remote_root, rel_path).replace("\\", "/")
             self.log_message(f"Uploading: {rel_path}")
@@ -496,7 +585,6 @@ class InternxtSyncApp(App):
             except Exception as e:
                 self.log_message(f"Error uploading {rel_path}: {e}")
 
-        # Deletions
         for rel_path in to_delete:
             remote_path = os.path.join(remote_root, rel_path).replace("\\", "/")
             self.log_message(f"Deleting: {rel_path}")
@@ -511,6 +599,14 @@ class InternxtSyncApp(App):
     def log_message(self, msg):
         self.query_one(Log).write_line(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
+    def _format_size(self, size):
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size < 1024:
+                return f"{size:.1f} {unit}"
+            size /= 1024
+        return f"{size:.1f} PB"
+
 if __name__ == "__main__":
     app = InternxtSyncApp()
     app.run()
+
