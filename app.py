@@ -1,21 +1,39 @@
 from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, Tree, Label, Log, Button, SelectionList, Input, ProgressBar, Static
-from textual.containers import Container, Horizontal, Vertical, Grid
-from textual.screen import ModalScreen
-from textual.worker import Worker, get_current_worker
-from textual import on, work, events
-from textual.message import Message
-from textual.reactive import reactive
+from textual.widgets import Header, Footer, Tree, Label, Log, Button, SelectionList, Input, ProgressBar, Static, Checkbox
+import shutil
+import tempfile
+import zipfile
 
-import os
-import time
-import requests
-from internxt_client import InternxtClient
-from sync_logic import SyncEngine
+# ... existing imports ...
 
-# --- Screens ---
+class SyncOptionsScreen(ModalScreen):
+    """Screen to configure sync options."""
+    def __init__(self, message):
+        super().__init__()
+        self.message = message
 
-class LoginScreen(ModalScreen):
+    def compose(self) -> ComposeResult:
+        yield Vertical(
+            Label(self.message),
+            Checkbox("Exclude hidden files/folders (.*)", value=True, id="exclude_hidden"),
+            Checkbox("Zip content before upload", value=False, id="zip_mode"),
+            Horizontal(
+                Button("Start Sync", variant="success", id="start"),
+                Button("Cancel", variant="error", id="cancel"),
+                classes="button_row"
+            ),
+            classes="modal_dialog"
+        )
+
+    @on(Button.Pressed)
+    def action(self, event):
+        if event.button.id == "start":
+            exclude_hidden = self.query_one("#exclude_hidden", Checkbox).value
+            zip_mode = self.query_one("#zip_mode", Checkbox).value
+            self.dismiss((True, exclude_hidden, zip_mode))
+        else:
+            self.dismiss((False, False, False))
+
     """Screen to force login."""
     def compose(self) -> ComposeResult:
         yield Vertical(
@@ -141,19 +159,19 @@ class InternxtSyncApp(App):
         padding: 0 1;
     }
     .modal_dialog {
-        padding: 2;
+        padding: 1 2;
         border: solid #3e3e3e;
         background: #252526;
-        width: 60;
+        width: 50%;
         height: auto;
         align: center middle;
     }
     .modal_dialog_large {
-        padding: 2;
+        padding: 1 2;
         border: solid #3e3e3e;
         background: #252526;
-        width: 80%;
-        height: 80%;
+        width: 60%;
+        height: 60%;
         align: center middle;
     }
     .button_row {
@@ -162,10 +180,15 @@ class InternxtSyncApp(App):
         margin-top: 1;
     }
     Button {
-        margin: 1;
+        margin: 0 1;
+        height: 1;
+        min-width: 10;
         background: #3e3e42;
         color: #ffffff;
         border: none;
+    }
+    Checkbox {
+        margin: 1 0;
     }
     Button:hover {
         background: #4e4e52;
@@ -583,46 +606,92 @@ class InternxtSyncApp(App):
             self.log_message(f"Download error: {e}")
 
     def action_sync(self):
-        def start_sync_process(confirm):
+        def start_sync_process(result):
+            confirm, exclude_hidden, zip_mode = result
             if confirm:
-                self.log_message(f"Syncing {self.local_path} -> {self.remote_path}")
-                self.run_sync_analysis(self.local_path, self.remote_path)
+                self.log_message(f"Syncing {self.local_path} -> {self.remote_path} (Hidden: {exclude_hidden}, Zip: {zip_mode})")
+                self.run_sync_analysis(self.local_path, self.remote_path, exclude_hidden, zip_mode)
 
-        self.push_screen(ConfirmScreen(f"Sync local content to remote folder?"), start_sync_process)
+        self.push_screen(SyncOptionsScreen(f"Sync local content to remote folder?"), start_sync_process)
 
     @work(thread=True)
-    def run_sync_analysis(self, local_root, remote_root):
+    def run_sync_analysis(self, local_root, remote_root, exclude_hidden, zip_mode):
+        # Disable panes during sync? 
+        # self.query_one("#left_pane").disabled = True # Visual feedback might be enough
+        
+        progress = self.query_one("#right_pane_progress")
+        self.call_from_thread(progress.update, total=None) # Indeterminate initially
+
+        if zip_mode:
+            self.log_message("Zipping content...")
+            try:
+                # Create temp zip
+                parent_dir = os.path.dirname(local_root)
+                base_name = os.path.basename(local_root)
+                
+                # shutil.make_archive creates base_name.zip
+                # We want it in a temp dir
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    zip_path = shutil.make_archive(os.path.join(temp_dir, base_name), 'zip', local_root)
+                    
+                    self.log_message(f"Uploading {os.path.basename(zip_path)}...")
+                    # Upload single file
+                    # Destination: remote_root + zip_name
+                    dest_path = os.path.join(remote_root, os.path.basename(zip_path)).replace("\\", "/")
+                    
+                    try:
+                        self.client.upload_file(zip_path, dest_path)
+                        self.log_message("Zip upload complete.")
+                    except Exception as e:
+                        self.log_message(f"Zip upload failed: {e}")
+            except Exception as e:
+                self.log_message(f"Zipping failed: {e}")
+            
+            self.call_from_thread(progress.update, total=100, progress=100)
+            self.call_from_thread(self.refresh_remote, remote_root)
+            return
+
+        # Normal Sync
         self.log_message("Scanning local files...")
-        local_items = self.sync_engine.scan_local(local_root)
+        local_items = self.sync_engine.scan_local(local_root, exclude_hidden=exclude_hidden)
         
         self.log_message("Scanning remote files...")
         try:
             remote_items = self.sync_engine.scan_remote(remote_root)
         except Exception as e:
             self.log_message(f"Sync Scan Error: {e}")
+            self.call_from_thread(progress.update, progress=0)
             return
         
         to_upload, to_create, to_delete = self.sync_engine.compare(local_items, remote_items)
         
+        total_ops = len(to_upload) + len(to_create) + len(to_delete)
         self.log_message(f"Analysis: {len(to_upload)} uploads, {len(to_create)} dirs, {len(to_delete)} deletions.")
 
         if to_delete:
-            self.call_from_thread(self.prompt_deletions, to_delete, to_upload, to_create, local_root, remote_root)
+            # We need to pass total_ops to run_sync_execution for progress bar
+            self.call_from_thread(self.prompt_deletions, to_delete, to_upload, to_create, local_root, remote_root, total_ops)
         else:
-            self.run_sync_execution(to_upload, to_create, [], local_root, remote_root)
+            self.run_sync_execution(to_upload, to_create, [], local_root, remote_root, total_ops)
 
-    def prompt_deletions(self, to_delete, to_upload, to_create, local_root, remote_root):
+    def prompt_deletions(self, to_delete, to_upload, to_create, local_root, remote_root, total_ops):
         def on_confirm(selected_deletions):
             if selected_deletions is None:
                 self.log_message("Sync cancelled.")
                 return
-            # Call worker directly, not run_worker on the result of a call
-            self.run_sync_execution(to_upload, to_create, selected_deletions, local_root, remote_root)
+            # Re-calculate total ops based on selected deletions
+            new_total = len(to_upload) + len(to_create) + len(selected_deletions)
+            self.run_sync_execution(to_upload, to_create, selected_deletions, local_root, remote_root, new_total)
 
         self.push_screen(DeletionConfirmScreen(to_delete), on_confirm)
 
     @work(thread=True)
-    def run_sync_execution(self, to_upload, to_create, to_delete, local_root, remote_root):
+    def run_sync_execution(self, to_upload, to_create, to_delete, local_root, remote_root, total_ops):
+        progress = self.query_one("#right_pane_progress")
+        self.call_from_thread(progress.update, total=total_ops, progress=0)
+        
+        completed_ops = 0
+
         for rel_path in to_create:
             remote_path = os.path.join(remote_root, rel_path).replace("\\", "/") 
             self.log_message(f"Creating dir: {rel_path}")
@@ -630,6 +699,8 @@ class InternxtSyncApp(App):
                 self.client.create_directory(remote_path)
             except Exception as e:
                 self.log_message(f"Error creating dir {rel_path}: {e}")
+            completed_ops += 1
+            self.call_from_thread(progress.update, progress=completed_ops)
 
         for abs_path, rel_path in to_upload:
             remote_path = os.path.join(remote_root, rel_path).replace("\\", "/")
@@ -638,6 +709,8 @@ class InternxtSyncApp(App):
                 self.client.upload_file(abs_path, remote_path)
             except Exception as e:
                 self.log_message(f"Error uploading {rel_path}: {e}")
+            completed_ops += 1
+            self.call_from_thread(progress.update, progress=completed_ops)
 
         for rel_path in to_delete:
             remote_path = os.path.join(remote_root, rel_path).replace("\\", "/")
@@ -646,8 +719,16 @@ class InternxtSyncApp(App):
                 self.client.delete_item(remote_path)
             except Exception as e:
                 self.log_message(f"Error deleting {rel_path}: {e}")
+            completed_ops += 1
+            self.call_from_thread(progress.update, progress=completed_ops)
 
         self.log_message("Sync complete.")
+        
+        # Reset progress bar after delay
+        def reset_progress():
+            progress.update(progress=0)
+        self.call_from_thread(self.set_timer, 1.0, reset_progress)
+        
         self.call_from_thread(self.refresh_remote, remote_root)
 
     def log_message(self, msg):

@@ -5,16 +5,26 @@ class SyncEngine:
     def __init__(self, client):
         self.client = client
 
-    def scan_local(self, root_path):
+    def scan_local(self, root_path, exclude_hidden=True):
         """Recursively scans local directory."""
         items = {} # path_relative_to_root -> {type, size, mtime, abs_path}
         
         for root, dirs, files in os.walk(root_path):
+            # Modify dirs in-place to skip hidden directories
+            if exclude_hidden:
+                dirs[:] = [d for d in dirs if not d.startswith('.')]
+                
             for name in files:
+                if exclude_hidden and name.startswith('.'):
+                    continue
+                    
                 abs_path = os.path.join(root, name)
                 rel_path = os.path.relpath(abs_path, root_path)
                 try:
                     stat = os.stat(abs_path)
+                    if stat.st_size == 0: # Skip empty files
+                        continue
+                        
                     items[rel_path] = {
                         'type': 'file',
                         'size': stat.st_size,
