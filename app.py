@@ -51,8 +51,11 @@ class SyncOptionsScreen(ModalScreen):
         yield Vertical(
             Label("InterNxt not logged in or CLI not found."),
             Label("Please log in using the browser window that will open."),
-            Button("Login", id="login_btn"),
-            Button("Quit", id="quit_btn"),
+            Horizontal(
+                Button("Login", id="login_btn"),
+                Button("Quit", id="quit_btn"),
+                classes="button_row"
+            ),
             classes="modal_dialog"
         )
 
@@ -624,12 +627,19 @@ class InternxtSyncApp(App):
 
     @work(thread=True)
     def run_download(self, remote, local):
+        progress = self.query_one("#right_pane_progress")
+        self.call_from_thread(progress.update, total=None) # Indeterminate
         try:
             self.client.download_file(remote, local)
             self.log_message("Download complete.")
             self.call_from_thread(self.refresh_local, self.local_path)
         except Exception as e:
             self.log_message(f"Download error: {e}")
+        finally:
+            self.call_from_thread(progress.update, total=100, progress=100)
+            def reset():
+                progress.update(progress=0)
+            self.call_from_thread(self.set_timer, 1.0, reset)
 
     def action_sync(self):
         def start_sync_process(result):

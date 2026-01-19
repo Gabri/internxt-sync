@@ -25,35 +25,50 @@ class InternxtClient:
             return False
 
     def login(self):
-        """Runs the interactive login process."""
-        # This usually opens a browser.
+        """Runs the interactive login process parsing stdout."""
+        import webbrowser
         try:
-            # Run asynchronously to avoid blocking if it waits for input, though it should open browser
-            # Using Popen to detach might be safer if it doesn't return immediately
-            # But we want to wait? No, 'internxt login' usually blocks until login done OR just opens browser.
-            # Let's try capturing output to see errors.
             print("DEBUG: Executing internxt login...")
+            # Use Popen to not block and read output line by line
             process = subprocess.Popen(
                 ["internxt", "login"], 
                 stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE,
-                text=True
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
             )
-            # We don't wait here because we want the TUI to remain responsive if it blocks
-            # But the user needs to interact with browser.
-            # Let's just let it run.
-            # Actually, to debug, let's wait a bit and check output?
-            # Or run synchronously with timeout?
-            # Reverting to synchronous run but with error capture to log it.
             
-            result = subprocess.run(["internxt", "login"], capture_output=True, text=True, timeout=120)
-            if result.returncode != 0:
-                print(f"Login command failed: {result.stderr}")
-            else:
-                print(f"Login command output: {result.stdout}")
+            # Read output while process runs
+            while True:
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
+                    break
                 
-        except subprocess.TimeoutExpired:
-            print("Login command timed out (browser might be open).")
+                if line:
+                    clean_line = line.strip()
+                    # print(f"LOGIN: {clean_line}") # Debug
+                    
+                    # If URL found, try to open it
+                    if "https://" in clean_line and "internxt.com" in clean_line:
+                        url = clean_line
+                        # Clean prefix if present (e.g. "visit:")
+                        if "visit:" in url:
+                            url = url.split("visit:")[-1].strip()
+                        
+                        # Some versions output the url inside text
+                        # Simple extraction: find https start
+                        if "https" in url:
+                            start = url.find("https")
+                            url = url[start:].split()[0] # Take until space
+
+                        try:
+                            webbrowser.open(url)
+                        except:
+                            pass
+
+            # Wait for process end (login completed)
+            process.wait()
+                
         except Exception as e:
             print(f"Login execution error: {e}")
 
