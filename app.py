@@ -325,17 +325,23 @@ class InternxtSyncApp(App):
 
     def after_login(self, should_login):
         if should_login:
-            self.client.login()
-            # Wait a bit for login process
-            time.sleep(2)
-            if self.client.check_login():
-                self.notify("Login successful.")
-                self.start_webdav_and_load()
-            else:
-                self.notify("Login might have failed or is incomplete. Check browser.", severity="warning")
-                self.start_webdav_and_load() # Try anyway
+            # Run login process in a separate thread to avoid blocking UI
+            self.run_login_process()
         else:
             self.exit()
+
+    @work(thread=True)
+    def run_login_process(self):
+        self.log_message("Launching login browser...")
+        self.client.login()
+        # Wait a bit for login process
+        time.sleep(2)
+        if self.client.check_login():
+            self.call_from_thread(self.notify, "Login successful.")
+            self.start_webdav_and_load()
+        else:
+            self.call_from_thread(self.notify, "Login might have failed or is incomplete. Check browser.", severity="warning")
+            self.start_webdav_and_load() # Try anyway
 
     @work(exclusive=True, thread=True)
     def start_webdav_and_load(self):
