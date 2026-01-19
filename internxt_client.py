@@ -132,10 +132,17 @@ class InternxtClient:
                 # Use UUID for CLI operations
                 uuid = f.get("uuid") or str(f.get("id"))
                 self.folder_id_cache[f"FILE:{item_path}"] = uuid
+                
+                size = f.get("size", 0)
+                try:
+                    size = int(size)
+                except (ValueError, TypeError):
+                    size = 0
+                    
                 items.append({
                     'name': name,
                     'is_dir': False,
-                    'size': f.get("size", 0),
+                    'size': size,
                     'path': item_path
                 })
             return items

@@ -338,8 +338,12 @@ class InternxtSyncApp(App):
         
         if left.has_focus:
             right.focus()
+            if right.cursor_line == -1 and right.root.children:
+                right.cursor_line = 0
         else:
             left.focus()
+            if left.cursor_line == -1 and left.root.children:
+                left.cursor_line = 0
 
     def action_focus_path(self):
         left_pane = self.query_one("#left_pane")
@@ -441,7 +445,7 @@ class InternxtSyncApp(App):
             # Reset progress bar after a short delay
             def reset_progress():
                 progress.update(progress=0)
-            self.set_timer(1.0, reset_progress)
+            self.call_from_thread(self.set_timer, 1.0, reset_progress)
         except Exception as e:
             self.log_message(f"Local Error: {e}")
             progress.update(progress=0)
@@ -451,6 +455,10 @@ class InternxtSyncApp(App):
         self.call_from_thread(self.update_remote_input, path)
         progress = self.query_one("#right_pane_progress")
         stats_label = self.query_one("#right_pane_stats")
+        
+        # Disable interaction if possible? Textual doesn't have easy 'disabled' for Trees
+        # We can just show loading.
+        
         self.call_from_thread(stats_label.update, "Loading remote...")
         self.call_from_thread(progress.update, total=100, progress=10)
         
@@ -461,7 +469,7 @@ class InternxtSyncApp(App):
             
             def reset_progress():
                 progress.update(progress=0)
-            self.set_timer(1.0, reset_progress)
+            self.call_from_thread(self.set_timer, 1.0, reset_progress)
         except Exception as e:
             self.log_message(f"Remote List Error: {e}")
             self.call_from_thread(stats_label.update, "Error loading remote.")
@@ -493,11 +501,21 @@ class InternxtSyncApp(App):
                     tree.root.add(f"📁 {name}", data={"type": "dir", "path": item['path'], "is_up": False}, allow_expand=False)
                 else:
                     file_count += 1
-                    total_size += item['size']
-                    tree.root.add(f"📄 {name} ({self._format_size(item['size'])})", data={"type": "file", "path": item['path']}, allow_expand=False)
+                    # Ensure size is int
+                    try:
+                        size = int(item.get('size', 0))
+                    except (ValueError, TypeError):
+                        size = 0
+                    total_size += size
+                    tree.root.add(f"📄 {name} ({self._format_size(size)})", data={"type": "file", "path": item['path']}, allow_expand=False)
         
         tree.root.expand()
         stats_label.update(f"Files: {file_count} | Size: {self._format_size(total_size)}")
+        
+        # Auto-focus first item if present (usually "..")
+        # Textual Tree doesn't auto-select first node, let's do it manually if focused
+        if tree.has_focus:
+            tree.cursor_line = 0
 
     # --- Interaction ---
 
@@ -598,7 +616,8 @@ class InternxtSyncApp(App):
             if selected_deletions is None:
                 self.log_message("Sync cancelled.")
                 return
-            self.run_worker(self.run_sync_execution(to_upload, to_create, selected_deletions, local_root, remote_root))
+            # Call worker directly, not run_worker on the result of a call
+            self.run_sync_execution(to_upload, to_create, selected_deletions, local_root, remote_root)
 
         self.push_screen(DeletionConfirmScreen(to_delete), on_confirm)
 
