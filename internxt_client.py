@@ -27,7 +27,35 @@ class InternxtClient:
     def login(self):
         """Runs the interactive login process."""
         # This usually opens a browser.
-        subprocess.run(["internxt", "login"])
+        try:
+            # Run asynchronously to avoid blocking if it waits for input, though it should open browser
+            # Using Popen to detach might be safer if it doesn't return immediately
+            # But we want to wait? No, 'internxt login' usually blocks until login done OR just opens browser.
+            # Let's try capturing output to see errors.
+            print("DEBUG: Executing internxt login...")
+            process = subprocess.Popen(
+                ["internxt", "login"], 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            # We don't wait here because we want the TUI to remain responsive if it blocks
+            # But the user needs to interact with browser.
+            # Let's just let it run.
+            # Actually, to debug, let's wait a bit and check output?
+            # Or run synchronously with timeout?
+            # Reverting to synchronous run but with error capture to log it.
+            
+            result = subprocess.run(["internxt", "login"], capture_output=True, text=True, timeout=120)
+            if result.returncode != 0:
+                print(f"Login command failed: {result.stderr}")
+            else:
+                print(f"Login command output: {result.stdout}")
+                
+        except subprocess.TimeoutExpired:
+            print("Login command timed out (browser might be open).")
+        except Exception as e:
+            print(f"Login execution error: {e}")
 
     def is_webdav_active(self):
         """Checks if WebDAV port is listening."""

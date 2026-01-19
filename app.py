@@ -163,6 +163,7 @@ class InternxtSyncApp(App):
         layers: base modal;
         background: #1e1e1e;
         color: #d4d4d4;
+        align: center middle;
     }
     #app_status_bar {
         height: 1;
@@ -171,39 +172,36 @@ class InternxtSyncApp(App):
         padding: 0 1;
     }
     .modal_dialog {
-        padding: 1 2;
-        border: solid #3e3e3e;
+        padding: 2 4;
+        border: solid #007acc;
         background: #252526;
-        width: 50%;
+        width: 50;
         height: auto;
-        align: center middle;
     }
     .modal_dialog_large {
         padding: 1 2;
-        border: solid #3e3e3e;
+        border: solid #007acc;
         background: #252526;
-        width: 60%;
-        height: 60%;
-        align: center middle;
+        width: 70%;
+        height: 70%;
     }
     .button_row {
         align: center middle;
         height: auto;
-        margin-top: 1;
+        margin-top: 2;
+        width: 100%;
     }
     Button {
-        margin: 0 1;
-        height: 1;
-        min-width: 10;
+        margin: 0 2;
+        height: 3;
+        min-width: 14;
         background: #3e3e42;
         color: #ffffff;
         border: none;
     }
-    Checkbox {
-        margin: 1 0;
-    }
     Button:hover {
-        background: #4e4e52;
+        background: #007acc;
+        color: #ffffff;
     }
     #left_pane, #right_pane {
         width: 50%;
