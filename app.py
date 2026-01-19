@@ -123,7 +123,9 @@ class Pane(Vertical):
         yield FileSystemTree(self.title, id=f"{self.id}_tree")
         with Horizontal(classes="pane_footer"):
             yield Label("Files: 0 | Size: 0 B", id=f"{self.id}_stats")
-            yield ProgressBar(id=f"{self.id}_progress", show_eta=False, show_percentage=False)
+            progress = ProgressBar(id=f"{self.id}_progress", show_eta=False, show_percentage=False)
+            progress.update(total=100, progress=0)
+            yield progress
 
 class InternxtSyncApp(App):
     CSS = """
@@ -180,6 +182,9 @@ class InternxtSyncApp(App):
     #right_pane:focus-within {
         border: solid #007acc;
     }
+    FileSystemTree {
+        height: 1fr;
+    }
     Input {
         dock: top;
         margin: 0;
@@ -188,6 +193,7 @@ class InternxtSyncApp(App):
         background: #2d2d2d;
         color: #cccccc;
         height: 1;
+        content-align: left middle;
     }
     Input:focus {
         border: none;
@@ -207,6 +213,7 @@ class InternxtSyncApp(App):
     ProgressBar {
         width: 20;
         height: 1;
+        margin-left: 1;
     }
     ProgressBar > .bar--bar {
         background: #007acc;
@@ -217,6 +224,7 @@ class InternxtSyncApp(App):
         border-top: solid #333333;
         background: #1e1e1e;
         color: #cccccc;
+        can-focus: false;
     }
     """
 
@@ -247,7 +255,9 @@ class InternxtSyncApp(App):
         with Horizontal(id="app_status_bar"):
             yield Label("Mode: CLI", id="mode_label")
             yield Label(" | Press 'm' to toggle CLI/WebDAV", id="mode_hint")
-        yield Log()
+        log_widget = Log(id="app_log")
+        log_widget.can_focus = False
+        yield log_widget
         yield Footer()
 
 
@@ -390,7 +400,7 @@ class InternxtSyncApp(App):
         
         stats_label.update("Loading local...")
         tree.clear()
-        progress.update(total=100, progress=0)
+        progress.update(total=100, progress=10)
         
         # Add ".."
         parent = os.path.dirname(path)
@@ -403,6 +413,7 @@ class InternxtSyncApp(App):
             files = []
             total_size = 0
             
+            progress.update(progress=50)
             for entry in entries:
                 if entry.is_dir():
                     dirs.append(entry)
@@ -421,6 +432,9 @@ class InternxtSyncApp(App):
             tree.root.expand()
             stats_label.update(f"Files: {len(files)} | Size: {self._format_size(total_size)}")
             progress.update(progress=100)
+            # Reset progress bar
+            time.sleep(0.5)
+            progress.update(progress=0)
         except Exception as e:
             self.log_message(f"Local Error: {e}")
             progress.update(progress=0)
@@ -437,6 +451,9 @@ class InternxtSyncApp(App):
             items = self.client.list_remote(path)
             self.call_from_thread(progress.update, progress=100)
             self.call_from_thread(self.populate_remote_tree, path, items)
+            # Reset progress after a short delay or just leave at 100
+            time.sleep(0.5)
+            self.call_from_thread(progress.update, progress=0)
         except Exception as e:
             self.log_message(f"Remote List Error: {e}")
             self.call_from_thread(stats_label.update, "Error loading remote.")
@@ -607,7 +624,7 @@ class InternxtSyncApp(App):
         self.call_from_thread(self.refresh_remote, remote_root)
 
     def log_message(self, msg):
-        self.query_one(Log).write_line(f"[{time.strftime('%H:%M:%S')}] {msg}")
+        self.query_one("#app_log", Log).write_line(f"[{time.strftime('%H:%M:%S')}] {msg}")
 
     def _format_size(self, size):
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:

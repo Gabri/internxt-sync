@@ -112,7 +112,8 @@ class InternxtClient:
             for f in data["list"].get("folders", []):
                 name = f.get("plainName") or f.get("name")
                 item_path = os.path.join(path, name).replace("\\", "/")
-                self.folder_id_cache[item_path] = str(f["id"])
+                # Use UUID for CLI operations
+                self.folder_id_cache[item_path] = str(f["uuid"])
                 items.append({
                     'name': name,
                     'is_dir': True,
@@ -123,7 +124,8 @@ class InternxtClient:
             for f in data["list"].get("files", []):
                 name = f.get("plainName") or f.get("name")
                 item_path = os.path.join(path, name).replace("\\", "/")
-                self.folder_id_cache[f"FILE:{item_path}"] = str(f["id"])
+                # Use UUID for CLI operations
+                self.folder_id_cache[f"FILE:{item_path}"] = str(f["uuid"])
                 items.append({
                     'name': name,
                     'is_dir': False,
@@ -132,7 +134,6 @@ class InternxtClient:
                 })
             return items
         except Exception as e:
-            # Re-raise with context
             raise Exception(f"list_remote_cli('{path}') failed: {str(e)}")
 
     def download_file(self, remote_path, local_path):
@@ -148,8 +149,11 @@ class InternxtClient:
                 raise Exception(f"Could not find ID for {remote_path}")
             
             dest_dir = os.path.dirname(local_path)
+            # CLI download-file uses -i for ID
             cmd = ["internxt", "download-file", "-x", "-i", file_id, "-d", dest_dir, "-o"]
-            subprocess.run(cmd, capture_output=True)
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise Exception(f"CLI Download Error: {result.stderr or result.stdout}")
         else:
             url = f"{self.webdav_url}{quote(remote_path)}"
             with requests.get(url, stream=True, verify=False) as r:
@@ -222,8 +226,12 @@ class InternxtClient:
                     prop = propstat.find('d:prop', namespaces)
                     resourcetype = prop.find('d:resourcetype', namespaces)
                     is_collection = False
-                    if resourcetype is not None and resourcetype.find('d:collection', namespaces) is not None:
-                        is_collection = True
+                    if resourcetype is not None:
+                        # Check for <d:collection/> or <collection/>
+                        if resourcetype.find('d:collection', namespaces) is not None or \
+                           resourcetype.find('collection', namespaces) is not None or \
+                           resourcetype.find('{DAV:}collection') is not None:
+                            is_collection = True
                     
                     getcontentlength = prop.find('d:getcontentlength', namespaces)
                     size = int(getcontentlength.text) if getcontentlength is not None and getcontentlength.text else 0
