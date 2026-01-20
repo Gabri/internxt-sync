@@ -357,6 +357,8 @@ class InternxtSyncApp(App):
                 self.start_webdav_and_load() # Try anyway
         except Exception as e:
             self.call_from_thread(self.log_message, f"Login Worker FATAL Error: {e}")
+            import traceback
+            self.call_from_thread(self.log_message, f"Traceback: {traceback.format_exc()}")
 
     @work(exclusive=True, thread=True)
     def start_webdav_and_load(self):
