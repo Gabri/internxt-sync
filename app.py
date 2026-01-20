@@ -319,13 +319,18 @@ class InternxtSyncApp(App):
         self.refresh_local(self.local_path)
 
         self.log_message("Checking Internxt status...")
-        if not self.client.check_login():
+        check = self.client.check_login()
+        self.log_message(f"Login Check Result: {check}")
+        
+        if not check:
+            self.log_message("Not logged in. Showing Login Screen.")
             self.push_screen(LoginScreen(), self.after_login)
         else:
             self.start_webdav_and_load()
 
     def after_login(self, should_login):
         if should_login:
+            self.log_message("User requested login. Starting worker...")
             # Run login process in a separate thread to avoid blocking UI
             self.run_login_process()
         else:
@@ -334,9 +339,13 @@ class InternxtSyncApp(App):
     @work(thread=True)
     def run_login_process(self):
         try:
-            self.call_from_thread(self.log_message, "Launching login process...")
+            self.call_from_thread(self.log_message, "Worker: Launching login process...")
+            
+            def ui_logger(msg):
+                self.call_from_thread(self.log_message, f"CLI: {msg}")
+            
             # Pass log_message to capture output in UI
-            self.client.login(log_callback=lambda msg: self.call_from_thread(self.log_message, f"CLI: {msg}"))
+            self.client.login(log_callback=ui_logger)
             
             # Wait a bit for login process
             time.sleep(2)
@@ -344,10 +353,10 @@ class InternxtSyncApp(App):
                 self.call_from_thread(self.notify, "Login successful.")
                 self.start_webdav_and_load()
             else:
-                self.call_from_thread(self.notify, "Login might have failed or is incomplete. Check browser.", severity="warning")
+                self.call_from_thread(self.notify, "Login check failed. Please check browser/terminal.", severity="warning")
                 self.start_webdav_and_load() # Try anyway
         except Exception as e:
-            self.call_from_thread(self.log_message, f"Login Worker Error: {e}")
+            self.call_from_thread(self.log_message, f"Login Worker FATAL Error: {e}")
 
     @work(exclusive=True, thread=True)
     def start_webdav_and_load(self):

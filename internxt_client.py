@@ -18,8 +18,14 @@ class InternxtClient:
     def check_login(self):
         """Checks if logged in by running a simple command."""
         try:
+            cmd = ["internxt", "whoami"]
+            # Fallback for executable path if PATH issue
+            base = self._find_executable()
+            if base:
+                cmd = base + ["whoami"]
+            
             # internxt account info or similar
-            result = subprocess.run(["internxt", "whoami"], capture_output=True, text=True)
+            result = subprocess.run(cmd, capture_output=True, text=True)
             return result.returncode == 0
         except FileNotFoundError:
             return False
