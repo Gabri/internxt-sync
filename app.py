@@ -333,18 +333,21 @@ class InternxtSyncApp(App):
 
     @work(thread=True)
     def run_login_process(self):
-        self.log_message("Launching login process...")
-        # Pass log_message to capture output in UI
-        self.client.login(log_callback=lambda msg: self.call_from_thread(self.log_message, f"CLI: {msg}"))
-        
-        # Wait a bit for login process
-        time.sleep(2)
-        if self.client.check_login():
-            self.call_from_thread(self.notify, "Login successful.")
-            self.start_webdav_and_load()
-        else:
-            self.call_from_thread(self.notify, "Login check failed. Please check browser/terminal.", severity="warning")
-            self.start_webdav_and_load() # Try anyway
+        try:
+            self.call_from_thread(self.log_message, "Launching login process...")
+            # Pass log_message to capture output in UI
+            self.client.login(log_callback=lambda msg: self.call_from_thread(self.log_message, f"CLI: {msg}"))
+            
+            # Wait a bit for login process
+            time.sleep(2)
+            if self.client.check_login():
+                self.call_from_thread(self.notify, "Login successful.")
+                self.start_webdav_and_load()
+            else:
+                self.call_from_thread(self.notify, "Login might have failed or is incomplete. Check browser.", severity="warning")
+                self.start_webdav_and_load() # Try anyway
+        except Exception as e:
+            self.call_from_thread(self.log_message, f"Login Worker Error: {e}")
 
     @work(exclusive=True, thread=True)
     def start_webdav_and_load(self):

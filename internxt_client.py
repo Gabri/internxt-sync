@@ -27,9 +27,14 @@ class InternxtClient:
     def login(self, log_callback=None):
         """Runs the interactive login process parsing stdout."""
         import webbrowser
+        import shutil
         try:
             if log_callback: log_callback("Executing internxt login...")
             
+            if not shutil.which("internxt"):
+                if log_callback: log_callback("Error: 'internxt' executable not found in PATH.")
+                return
+
             # Use Popen to not block and read output line by line
             # bufsize=1 means line buffered
             process = subprocess.Popen(
@@ -50,6 +55,7 @@ class InternxtClient:
                 if line:
                     clean_line = line.strip()
                     if log_callback: log_callback(clean_line)
+                    print(f"DEBUG_LOGIN: {clean_line}") # Force print to console for debugging
                     
                     # If URL found, try to open it
                     if "https://" in clean_line and "internxt.com" in clean_line:
