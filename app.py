@@ -196,8 +196,8 @@ class InternxtSyncApp(App):
     }
     Button {
         margin: 0 1;
-        height: 1;
-        min-width: 10;
+        height: 3;
+        min-width: 20;
         background: #3e3e42;
         color: #ffffff;
         border: none;
@@ -333,15 +333,17 @@ class InternxtSyncApp(App):
 
     @work(thread=True)
     def run_login_process(self):
-        self.log_message("Launching login browser...")
-        self.client.login()
+        self.log_message("Launching login process...")
+        # Pass log_message to capture output in UI
+        self.client.login(log_callback=lambda msg: self.call_from_thread(self.log_message, f"CLI: {msg}"))
+        
         # Wait a bit for login process
         time.sleep(2)
         if self.client.check_login():
             self.call_from_thread(self.notify, "Login successful.")
             self.start_webdav_and_load()
         else:
-            self.call_from_thread(self.notify, "Login might have failed or is incomplete. Check browser.", severity="warning")
+            self.call_from_thread(self.notify, "Login check failed. Please check browser/terminal.", severity="warning")
             self.start_webdav_and_load() # Try anyway
 
     @work(exclusive=True, thread=True)
@@ -384,14 +386,14 @@ class InternxtSyncApp(App):
         left = self.query_one("#left_pane_tree")
         right = self.query_one("#right_pane_tree")
         
-        if left.has_focus:
-            right.focus()
-            if right.cursor_line == -1 and right.root.children:
-                right.cursor_line = 0
-        else:
-            left.focus()
-            if left.cursor_line == -1 and left.root.children:
-                left.cursor_line = 0
+        target = right if left.has_focus else left
+        target.focus()
+        
+        # Auto-select first item ("..") if nothing is selected
+        if target.cursor_line == -1 and target.root.children:
+            target.cursor_line = 0
+            # Ensure visual selection update
+            target.refresh()
 
     def action_focus_path(self):
         left_pane = self.query_one("#left_pane")
