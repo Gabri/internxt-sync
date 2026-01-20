@@ -24,6 +24,35 @@ class InternxtClient:
         except FileNotFoundError:
             return False
 
+    def _find_executable(self):
+        import shutil
+        # 1. Try which
+        path = shutil.which("internxt")
+        if path: return [path]
+        
+        # 2. Try common locations
+        common_paths = [
+            "/usr/local/bin/internxt",
+            "/usr/bin/internxt",
+            "/bin/internxt"
+        ]
+        for p in common_paths:
+            if os.path.exists(p):
+                return [p]
+                
+        # 3. Try finding node and the script
+        node = shutil.which("node") or shutil.which("nodejs")
+        if node:
+            script_paths = [
+                "/usr/local/lib/node_modules/@internxt/cli/bin/run.js",
+                "/usr/lib/node_modules/@internxt/cli/bin/run.js"
+            ]
+            for s in script_paths:
+                if os.path.exists(s):
+                    return [node, s]
+        
+        return None
+
     def login(self, log_callback=None):
         """Runs the interactive login process parsing stdout."""
         import webbrowser
@@ -42,20 +71,20 @@ class InternxtClient:
             if log_callback: log_callback(msg)
             debug_log(msg)
             
-            if not shutil.which("internxt") and not os.path.exists("/usr/local/bin/internxt"):
-                 err = "Error: 'internxt' executable not found in PATH."
+            base_cmd = self._find_executable()
+            if not base_cmd:
+                 err = "Error: 'internxt' executable not found (checked path, /usr/local/bin, and node modules)."
                  if log_callback: log_callback(err)
                  debug_log(err)
                  return
 
-            cmd = ["internxt", "login"]
-            if os.path.exists("/usr/local/bin/internxt"):
-                cmd = ["/usr/local/bin/internxt", "login"]
+            cmd = base_cmd + ["login"]
 
             if log_callback: log_callback(f"Command: {cmd}")
             debug_log(f"Command: {cmd}")
 
             # Use Popen to not block and read output line by line
+            # bufsize=1 means line buffered
             process = subprocess.Popen(
                 cmd, 
                 stdout=subprocess.PIPE, 
@@ -64,6 +93,7 @@ class InternxtClient:
                 bufsize=1,
                 env=os.environ.copy()
             )
+
             
             debug_log(f"Process started with PID {process.pid}")
             if log_callback: log_callback("Login process started. Waiting for output...")
