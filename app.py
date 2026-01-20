@@ -191,13 +191,13 @@ class InternxtSyncApp(App):
     .button_row {
         align: center middle;
         height: auto;
-        margin-top: 2;
+        margin-top: 1;
         width: 100%;
     }
     Button {
-        margin: 0 2;
-        height: 3;
-        min-width: 14;
+        margin: 0 1;
+        height: 1;
+        min-width: 10;
         background: #3e3e42;
         color: #ffffff;
         border: none;
