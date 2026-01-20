@@ -37,8 +37,19 @@ class InternxtClient:
 
             # Use Popen to not block and read output line by line
             # bufsize=1 means line buffered
+            # Explicitly using full path to internxt just in case
+            cmd = ["/usr/local/bin/internxt", "login"]
+            if not shutil.which("internxt") and not os.path.exists("/usr/local/bin/internxt"):
+                 if log_callback: log_callback("Error: internxt binary not found.")
+                 return
+
+            if shutil.which("internxt"):
+                cmd = ["internxt", "login"]
+
+            if log_callback: log_callback(f"Running command: {cmd}")
+
             process = subprocess.Popen(
-                ["internxt", "login"], 
+                cmd, 
                 stdout=subprocess.PIPE, 
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -54,7 +65,7 @@ class InternxtClient:
                 
                 if line:
                     clean_line = line.strip()
-                    if log_callback: log_callback(clean_line)
+                    if log_callback: log_callback(f"CLI_OUT: {clean_line}")
                     print(f"DEBUG_LOGIN: {clean_line}") # Force print to console for debugging
                     
                     # If URL found, try to open it
