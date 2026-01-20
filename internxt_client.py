@@ -28,26 +28,34 @@ class InternxtClient:
         """Runs the interactive login process parsing stdout."""
         import webbrowser
         import shutil
-        try:
-            if log_callback: log_callback("Executing internxt login...")
-            
-            if not shutil.which("internxt"):
-                if log_callback: log_callback("Error: 'internxt' executable not found in PATH.")
-                return
+        
+        # Debug file logging
+        def debug_log(msg):
+            try:
+                with open("login_debug.txt", "a") as f:
+                    f.write(f"{time.strftime('%H:%M:%S')} - {msg}\n")
+            except:
+                pass
 
-            # Use Popen to not block and read output line by line
-            # bufsize=1 means line buffered
-            # Explicitly using full path to internxt just in case
-            cmd = ["/usr/local/bin/internxt", "login"]
+        try:
+            msg = "Executing internxt login..."
+            if log_callback: log_callback(msg)
+            debug_log(msg)
+            
             if not shutil.which("internxt") and not os.path.exists("/usr/local/bin/internxt"):
-                 if log_callback: log_callback("Error: internxt binary not found.")
+                 err = "Error: 'internxt' executable not found in PATH."
+                 if log_callback: log_callback(err)
+                 debug_log(err)
                  return
 
-            if shutil.which("internxt"):
-                cmd = ["internxt", "login"]
+            cmd = ["internxt", "login"]
+            if os.path.exists("/usr/local/bin/internxt"):
+                cmd = ["/usr/local/bin/internxt", "login"]
 
-            if log_callback: log_callback(f"Running command: {cmd}")
+            if log_callback: log_callback(f"Command: {cmd}")
+            debug_log(f"Command: {cmd}")
 
+            # Use Popen to not block and read output line by line
             process = subprocess.Popen(
                 cmd, 
                 stdout=subprocess.PIPE, 
@@ -57,6 +65,9 @@ class InternxtClient:
                 env=os.environ.copy()
             )
             
+            debug_log(f"Process started with PID {process.pid}")
+            if log_callback: log_callback("Login process started. Waiting for output...")
+
             # Read output while process runs
             while True:
                 line = process.stdout.readline()
@@ -65,8 +76,9 @@ class InternxtClient:
                 
                 if line:
                     clean_line = line.strip()
-                    if log_callback: log_callback(f"CLI_OUT: {clean_line}")
-                    print(f"DEBUG_LOGIN: {clean_line}") # Force print to console for debugging
+                    debug_log(f"STDOUT: {clean_line}")
+                    # Always log to UI to see activity
+                    if log_callback: log_callback(f"CLI: {clean_line}")
                     
                     # If URL found, try to open it
                     if "https://" in clean_line and "internxt.com" in clean_line:
@@ -76,7 +88,6 @@ class InternxtClient:
                             url = url.split("visit:")[-1].strip()
                         
                         # Some versions output the url inside text
-                        # Simple extraction: find https start
                         if "https" in url:
                             try:
                                 start = url.find("https")
@@ -87,20 +98,32 @@ class InternxtClient:
                                     url = url[start:end]
                             except:
                                 pass
-
-                        if log_callback: log_callback(f"Opening URL: {url}")
+                        
+                        msg_open = f"Opening Browser URL: {url}"
+                        if log_callback: log_callback(msg_open)
+                        debug_log(msg_open)
+                        
+                        if log_callback: log_callback("Please complete login in the browser window...")
+                        
                         try:
                             webbrowser.open(url)
                         except Exception as e:
-                            if log_callback: log_callback(f"Failed to open browser: {e}")
+                            err_browser = f"Failed to open browser: {e}"
+                            if log_callback: log_callback(err_browser)
+                            debug_log(err_browser)
 
             # Wait for process end (login completed)
-            process.wait()
-            if log_callback: log_callback(f"Login process finished with code {process.returncode}")
+            ret = process.wait()
+            end_msg = f"Login process finished with code {ret}"
+            if log_callback: log_callback(end_msg)
+            debug_log(end_msg)
                 
         except Exception as e:
-            if log_callback: log_callback(f"Login execution error: {e}")
-            print(f"Login execution error: {e}")
+            err_ex = f"Login execution error: {e}"
+            if log_callback: log_callback(err_ex)
+            print(err_ex)
+            debug_log(err_ex)
+
 
     def is_webdav_active(self):
         """Checks if WebDAV port is listening."""
