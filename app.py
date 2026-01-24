@@ -192,7 +192,7 @@ class InternxtSyncApp(App):
         background: $boost;
         width: 50;
         height: auto;
-l        align: center middle;
+        align: center middle;
     }
     
     .modal_dialog_large {
