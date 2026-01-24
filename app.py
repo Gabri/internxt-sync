@@ -167,6 +167,10 @@ class InternxtSyncApp(App):
         background: $surface;
         color: $text;
     }
+
+    LoginScreen, SyncOptionsScreen, DeletionConfirmScreen, ConfirmScreen {
+        align: center middle;
+    }
     
     #panes_container {
         height: 1fr;
@@ -192,7 +196,6 @@ class InternxtSyncApp(App):
         background: $boost;
         width: 50;
         height: auto;
-        align: center middle;
     }
     
     .modal_dialog_large {
@@ -201,7 +204,6 @@ class InternxtSyncApp(App):
         background: $boost;
         width: 70%;
         height: 70%;
-        align: center middle;
     }
     
     .modal_dialog_large > SelectionList.del_list {
@@ -294,6 +296,19 @@ class InternxtSyncApp(App):
         background: $boost;
         border: solid $primary;
         padding: 2 4;
+        width: 60;
+        height: auto;
+    }
+    
+    #sync_status_label {
+        text-align: center;
+        margin-bottom: 1;
+        color: $text;
+    }
+    
+    #sync_progress {
+        width: 100%;
+        height: 3;
     }
     """
 
@@ -316,19 +331,28 @@ class InternxtSyncApp(App):
         self.local_path = os.getcwd()
         self.remote_path = "/"
 
-    def show_sync_loader(self):
+    def show_sync_loader(self, total=100):
         """Mostra il loader di sync (overlay)."""
         container = self.query_one("#sync_loader_container")
         container.styles.display = "block"
-        loader = self.query_one("#sync_loader", LoadingIndicator)
-        loader.display = True
+        progress = self.query_one("#sync_progress", ProgressBar)
+        progress.update(total=total, progress=0)
 
     def hide_sync_loader(self):
         """Nasconde il loader di sync (overlay)."""
         container = self.query_one("#sync_loader_container")
         container.styles.display = "none"
-        loader = self.query_one("#sync_loader", LoadingIndicator)
-        loader.display = False
+    
+    def update_sync_progress(self, progress, status_text=None):
+        """Aggiorna la progress bar della sync."""
+        try:
+            pb = self.query_one("#sync_progress", ProgressBar)
+            pb.update(progress=progress)
+            if status_text:
+                label = self.query_one("#sync_status_label", Label)
+                label.update(status_text)
+        except Exception:
+            pass
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -345,9 +369,9 @@ class InternxtSyncApp(App):
 
         # Overlay per loading della sync (inizialmente nascosto)
         with Center(id="sync_loader_container"):
-            loader = LoadingIndicator(id="sync_loader")
-            loader.display = False
-            yield loader
+            with Vertical(id="sync_loader"):
+                yield Label("Syncing...", id="sync_status_label")
+                yield ProgressBar(id="sync_progress", show_eta=True, show_percentage=True)
 
         yield Footer()
 
@@ -874,8 +898,8 @@ class InternxtSyncApp(App):
 
     @work(thread=True)
     def run_sync_execution(self, to_upload, to_create, to_delete, local_root, remote_root, total_ops):
-        # Disable panels during sync
-        self.call_from_thread(self.disable_panels)
+        # Show sync loader with progress bar
+        self.call_from_thread(self.show_sync_loader, total_ops)
         
         progress = self.query_one("#right_pane_progress")
         stats_label = self.query_one("#right_pane_stats")
@@ -887,37 +911,48 @@ class InternxtSyncApp(App):
             remote_path = os.path.join(remote_root, rel_path).replace("\\", "/") 
             self.log_message(f"Creating dir: {rel_path}")
             self.call_from_thread(stats_label.update, f"Creating: {rel_path[:30]}...")
+            self.call_from_thread(self.update_sync_progress, completed_ops, f"Creating: {rel_path[:40]}...")
             try:
                 self.client.create_directory(remote_path)
             except Exception as e:
                 self.log_message(f"Error creating dir {rel_path}: {e}")
             completed_ops += 1
             self.call_from_thread(progress.update, progress=completed_ops)
+            self.call_from_thread(self.update_sync_progress, completed_ops)
 
         for abs_path, rel_path in to_upload:
             remote_path = os.path.join(remote_root, rel_path).replace("\\", "/")
             self.log_message(f"Uploading: {rel_path}")
             self.call_from_thread(stats_label.update, f"Uploading: {rel_path[:30]}...")
+            self.call_from_thread(self.update_sync_progress, completed_ops, f"Uploading: {rel_path[:40]}...")
             try:
                 self.client.upload_file(abs_path, remote_path)
             except Exception as e:
                 self.log_message(f"Error uploading {rel_path}: {e}")
             completed_ops += 1
             self.call_from_thread(progress.update, progress=completed_ops)
+            self.call_from_thread(self.update_sync_progress, completed_ops)
 
         for rel_path in to_delete:
             remote_path = os.path.join(remote_root, rel_path).replace("\\", "/")
             self.log_message(f"Deleting: {rel_path}")
             self.call_from_thread(stats_label.update, f"Deleting: {rel_path[:30]}...")
+            self.call_from_thread(self.update_sync_progress, completed_ops, f"Deleting: {rel_path[:40]}...")
             try:
                 self.client.delete_item(remote_path)
             except Exception as e:
                 self.log_message(f"Error deleting {rel_path}: {e}")
             completed_ops += 1
             self.call_from_thread(progress.update, progress=completed_ops)
+            self.call_from_thread(self.update_sync_progress, completed_ops)
 
         self.log_message("Sync complete.")
         self.call_from_thread(stats_label.update, "Sync complete!")
+        self.call_from_thread(self.update_sync_progress, completed_ops, "Sync complete!")
+        
+        # Hide sync loader after a short delay
+        time.sleep(1)
+        self.call_from_thread(self.hide_sync_loader)
         
         # Reset progress bar after delay
         def reset_progress():
