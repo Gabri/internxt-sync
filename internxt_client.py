@@ -25,9 +25,43 @@ class InternxtClient:
                 cmd = base + ["whoami"]
             
             # internxt account info or similar
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            return result.returncode == 0
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            
+            # Combine stdout and stderr for checking
+            output = (result.stdout + result.stderr).lower()
+            
+            # Check if output contains error messages about credentials
+            # These patterns indicate NOT logged in
+            error_patterns = [
+                "missing credentials",
+                "please login",
+                "not logged in",
+                "you are not logged in",
+                "error:",
+                "authentication required"
+            ]
+            
+            for pattern in error_patterns:
+                if pattern in output:
+                    return False
+            
+            # If return code is not 0, also consider not logged in
+            if result.returncode != 0:
+                return False
+            
+            # If we get here and output is not empty, assume logged in
+            # (whoami should return user info when logged in)
+            if output.strip():
+                return True
+            
+            # Empty output is suspicious, assume not logged in
+            return False
+            
+        except subprocess.TimeoutExpired:
+            return False
         except FileNotFoundError:
+            return False
+        except Exception:
             return False
 
     def _find_executable(self):
@@ -59,9 +93,12 @@ class InternxtClient:
         
         return None
 
-    def login(self, log_callback=None):
-        """Runs the interactive login process parsing stdout."""
-        import webbrowser
+    def login_get_url(self, log_callback=None):
+        """
+        Runs the interactive login process and returns the authentication URL.
+        Does NOT open browser - caller should do that in appropriate context.
+        Returns: URL string or None if not found
+        """
         import shutil
         
         # Debug file logging
@@ -82,7 +119,7 @@ class InternxtClient:
                  err = "Error: 'internxt' executable not found (checked path, /usr/local/bin, and node modules)."
                  if log_callback: log_callback(err)
                  debug_log(err)
-                 return
+                 return None
 
             cmd = base_cmd + ["login"]
 
@@ -104,6 +141,8 @@ class InternxtClient:
             debug_log(f"Process started with PID {process.pid}")
             if log_callback: log_callback("Login process started. Waiting for output...")
 
+            found_url = None
+            
             # Read output while process runs
             while True:
                 line = process.stdout.readline()
@@ -116,49 +155,64 @@ class InternxtClient:
                     # Always log to UI to see activity
                     if log_callback: log_callback(f"CLI: {clean_line}")
                     
-                    # If URL found, try to open it
-                    if "https://" in clean_line and "internxt.com" in clean_line:
-                        url = clean_line
-                        # Clean prefix if present (e.g. "visit:")
-                        if "visit:" in url:
-                            url = url.split("visit:")[-1].strip()
-                        
-                        # Some versions output the url inside text
-                        if "https" in url:
-                            try:
-                                start = url.find("https")
-                                end = url.find(" ", start)
-                                if end == -1:
-                                    url = url[start:]
-                                else:
-                                    url = url[start:end]
-                            except:
-                                pass
-                        
-                        msg_open = f"Opening Browser URL: {url}"
-                        if log_callback: log_callback(msg_open)
-                        debug_log(msg_open)
-                        
-                        if log_callback: log_callback("Please complete login in the browser window...")
-                        
-                        try:
-                            webbrowser.open(url)
-                        except Exception as e:
-                            err_browser = f"Failed to open browser: {e}"
-                            if log_callback: log_callback(err_browser)
-                            debug_log(err_browser)
+                    # If URL found, extract it but don't open browser yet
+                    if "https://" in clean_line and "internxt.com" in clean_line and not found_url:
+                        url = self._extract_url(clean_line)
+                        found_url = url
+                        msg_found = f"Found auth URL: {url}"
+                        if log_callback: log_callback(msg_found)
+                        debug_log(msg_found)
 
             # Wait for process end (login completed)
             ret = process.wait()
             end_msg = f"Login process finished with code {ret}"
             if log_callback: log_callback(end_msg)
             debug_log(end_msg)
+            
+            return found_url
                 
         except Exception as e:
             err_ex = f"Login execution error: {e}"
             if log_callback: log_callback(err_ex)
             print(err_ex)
             debug_log(err_ex)
+            return None
+
+    def _extract_url(self, line):
+        """Helper to extract URL from CLI output"""
+        url = line
+        # Clean prefix if present (e.g. "visit:")
+        if "visit:" in url:
+            url = url.split("visit:")[-1].strip()
+        
+        # Some versions output the url inside text
+        if "https" in url:
+            try:
+                start = url.find("https")
+                end = url.find(" ", start)
+                if end == -1:
+                    url = url[start:]
+                else:
+                    url = url[start:end]
+            except:
+                pass
+        
+        return url
+
+    def login(self, log_callback=None):
+        """
+        Runs the interactive login process (legacy method).
+        For better compatibility, use login_get_url() and open browser separately.
+        """
+        import webbrowser
+        
+        url = self.login_get_url(log_callback)
+        if url:
+            try:
+                webbrowser.open(url)
+                if log_callback: log_callback("Browser opened successfully")
+            except Exception as e:
+                if log_callback: log_callback(f"Failed to open browser: {e}")
 
 
     def is_webdav_active(self):
@@ -259,7 +313,12 @@ class InternxtClient:
                 })
             # Files
             for f in data["list"].get("files", []):
-                name = f.get("plainName") or f.get("name")
+                # Preferisci sempre il nome completo (con estensione) se esiste
+                fullname = f.get("name")
+                plain = f.get("plainName")
+                # Se 'name' non c'è per qualche motivo, fallback a 'plainName'
+                name = fullname or plain
+                
                 item_path = os.path.join(path, name).replace("\\", "/")
                 # Use UUID for CLI operations
                 uuid = f.get("uuid") or str(f.get("id"))

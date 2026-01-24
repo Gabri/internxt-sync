@@ -1,2 +1,2 @@
-textual
+textual>=0.50.0
 requests

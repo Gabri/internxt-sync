@@ -1,6 +1,6 @@
 from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, Tree, Label, Log, Button, SelectionList, Input, ProgressBar, Static, Checkbox
-from textual.containers import Container, Horizontal, Vertical, Grid
+from textual.widgets import Header, Footer, Tree, Label, Log, Button, SelectionList, Input, ProgressBar, Static, Checkbox, LoadingIndicator
+from textual.containers import Container, Horizontal, Vertical, Grid, Center
 from textual.screen import ModalScreen
 from textual.worker import Worker, get_current_worker
 from textual import on, work, events
@@ -17,6 +17,28 @@ from internxt_client import InternxtClient
 from sync_logic import SyncEngine
 
 # --- Screens ---
+
+class LoginScreen(ModalScreen):
+    """Screen to force login."""
+    def compose(self) -> ComposeResult:
+        yield Vertical(
+            Label("InterNxt not logged in or CLI not found."),
+            Label("Please log in using the browser window that will open."),
+            Horizontal(
+                Button("Login", id="login_btn"),
+                Button("Quit", id="quit_btn"),
+                classes="button_row"
+            ),
+            classes="modal_dialog"
+        )
+
+    @on(Button.Pressed, "#login_btn")
+    def on_login(self):
+        self.dismiss(True)
+
+    @on(Button.Pressed, "#quit_btn")
+    def on_quit(self):
+        self.app.exit()
 
 class SyncOptionsScreen(ModalScreen):
     """Screen to configure sync options."""
@@ -46,27 +68,6 @@ class SyncOptionsScreen(ModalScreen):
         else:
             self.dismiss((False, False, False))
 
-    """Screen to force login."""
-    def compose(self) -> ComposeResult:
-        yield Vertical(
-            Label("InterNxt not logged in or CLI not found."),
-            Label("Please log in using the browser window that will open."),
-            Horizontal(
-                Button("Login", id="login_btn"),
-                Button("Quit", id="quit_btn"),
-                classes="button_row"
-            ),
-            classes="modal_dialog"
-        )
-
-    @on(Button.Pressed, "#login_btn")
-    def on_login(self):
-        self.dismiss(True)
-
-    @on(Button.Pressed, "#quit_btn")
-    def on_quit(self):
-        self.app.exit()
-
 class DeletionConfirmScreen(ModalScreen):
     def __init__(self, deletions):
         super().__init__()
@@ -76,7 +77,7 @@ class DeletionConfirmScreen(ModalScreen):
         yield Vertical(
             Label("The following items exist remotely but NOT locally."),
             Label("Select items to DELETE from remote (Space to toggle):"),
-            SelectionList(*[(path, path, False) for path in self.deletions], id="del_list"),
+            SelectionList(*[(path, path, False) for path in self.deletions], id="del_list", classes="del_list"),
             Horizontal(
                 Button("Confirm Sync", variant="error", id="confirm"),
                 Button("Cancel", variant="primary", id="cancel"),
@@ -163,110 +164,137 @@ class Pane(Vertical):
 class InternxtSyncApp(App):
     CSS = """
     Screen {
-        layers: base modal;
-        background: #1e1e1e;
-        color: #d4d4d4;
-        align: center middle;
+        background: $surface;
+        color: $text;
     }
+    
+    #panes_container {
+        height: 1fr;
+    }
+    
     #app_status_bar {
         height: 1;
-        background: #252526;
-        color: #888888;
+        background: $boost;
+        color: $text-muted;
         padding: 0 1;
     }
+    
+    #app_log {
+        height: 20%;
+        border-top: solid $primary;
+        background: $surface;
+        color: $text;
+    }
+    
     .modal_dialog {
         padding: 2 4;
-        border: solid #007acc;
-        background: #252526;
+        border: solid $primary;
+        background: $boost;
         width: 50;
         height: auto;
+l        align: center middle;
     }
+    
     .modal_dialog_large {
         padding: 1 2;
-        border: solid #007acc;
-        background: #252526;
+        border: solid $primary;
+        background: $boost;
         width: 70%;
         height: 70%;
+        align: center middle;
     }
+    
+    .modal_dialog_large > SelectionList.del_list {
+        height: 1fr;
+        min-height: 5;
+    }
+    
     .button_row {
         align: center middle;
-        height: auto;
+        height: 3;
         margin-top: 1;
         width: 100%;
     }
+    
     Button {
         margin: 0 1;
         height: 3;
         min-width: 20;
-        background: #3e3e42;
-        color: #ffffff;
-        border: none;
+        background: $boost;
+        color: $text;
     }
+    
     Button:hover {
-        background: #007acc;
-        color: #ffffff;
+        background: $primary;
+        color: $text;
     }
+    
     #left_pane, #right_pane {
         width: 50%;
         height: 100%;
-        border: solid #333333;
-        background: #1e1e1e;
+        border: solid $panel;
+        background: $surface;
     }
-    #left_pane:focus-within {
-        border: solid #007acc;
+    
+    #left_pane:focus-within, #right_pane:focus-within {
+        border: solid $primary;
     }
-    #right_pane:focus-within {
-        border: solid #007acc;
+    
+    .pane_disabled {
+        opacity: 0.5;
     }
+    
     FileSystemTree {
         height: 1fr;
     }
+    
     Input {
-        dock: top;
         margin: 0;
         padding: 0 1;
         border: none;
-        background: #2d2d2d;
-        color: #cccccc;
+        background: $boost;
+        color: $text;
         height: 1;
     }
+    
     Input:focus {
         border: none;
-        background: #3d3d3d;
-        color: #ffffff;
+        background: $panel;
+        color: $text;
     }
+    
     .pane_footer {
         height: 1;
-        background: #252526;
-        color: #888888;
+        background: $boost;
+        color: $text-muted;
         padding: 0 1;
-        border-top: solid #333333;
+        border-top: solid $panel;
     }
+    
     .pane_footer Label {
         width: 1fr;
     }
+    
     ProgressBar {
-        width: 30%;
+        width: 25;
         height: 1;
         margin-left: 1;
     }
-    ProgressBar > .bar--bar {
-        background: #007acc;
+    
+    #sync_loader_container {
+        align: center middle;
+        width: 100%;
+        height: 100%;
+        layer: overlay;
+        display: none;
+        background: $surface 30%;
     }
-    ProgressBar > .bar--complete {
-        background: #4caf50;
+    
+    #sync_loader {
+        background: $boost;
+        border: solid $primary;
+        padding: 2 4;
     }
-    ProgressBar > .bar--background {
-        background: #333333;
-    }
-    Log {
-        height: 20%;
-        dock: bottom;
-        border-top: solid #333333;
-        background: #1e1e1e;
-        color: #cccccc;
-    }
-
     """
 
     BINDINGS = [
@@ -278,6 +306,7 @@ class InternxtSyncApp(App):
         ("ctrl+l", "focus_path", "Edit Path"),
         ("z", "calc_size", "Calc Folder Size"),
         ("m", "toggle_mode", "Toggle CLI/WebDAV"),
+        ("delete", "delete_item", "Delete File/Folder"),
     ]
 
     def __init__(self):
@@ -287,18 +316,39 @@ class InternxtSyncApp(App):
         self.local_path = os.getcwd()
         self.remote_path = "/"
 
+    def show_sync_loader(self):
+        """Mostra il loader di sync (overlay)."""
+        container = self.query_one("#sync_loader_container")
+        container.styles.display = "block"
+        loader = self.query_one("#sync_loader", LoadingIndicator)
+        loader.display = True
+
+    def hide_sync_loader(self):
+        """Nasconde il loader di sync (overlay)."""
+        container = self.query_one("#sync_loader_container")
+        container.styles.display = "none"
+        loader = self.query_one("#sync_loader", LoadingIndicator)
+        loader.display = False
+
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Horizontal(
-            Pane("Local", id="left_pane"),
-            Pane("Remote", id="right_pane")
-        )
-        with Horizontal(id="app_status_bar"):
-            yield Label("Mode: CLI", id="mode_label")
-            yield Label(" | Press 'm' to toggle CLI/WebDAV", id="mode_hint")
-        log_widget = Log(id="app_log")
-        log_widget.can_focus = False
-        yield log_widget
+        with Vertical():
+            with Horizontal(id="panes_container"):
+                yield Pane("Local", id="left_pane")
+                yield Pane("Remote", id="right_pane")
+            with Horizontal(id="app_status_bar"):
+                yield Label("Mode: CLI", id="mode_label")
+                yield Label(" | Press 'm' to toggle CLI/WebDAV", id="mode_hint")
+            log_widget = Log(id="app_log")
+            log_widget.can_focus = False
+            yield log_widget
+
+        # Overlay per loading della sync (inizialmente nascosto)
+        with Center(id="sync_loader_container"):
+            loader = LoadingIndicator(id="sync_loader")
+            loader.display = False
+            yield loader
+
         yield Footer()
 
 
@@ -344,8 +394,14 @@ class InternxtSyncApp(App):
             def ui_logger(msg):
                 self.call_from_thread(self.log_message, f"CLI: {msg}")
             
-            # Pass log_message to capture output in UI
-            self.client.login(log_callback=ui_logger)
+            # Get URL from login process (doesn't open browser)
+            url = self.client.login_get_url(log_callback=ui_logger)
+            
+            if url:
+                # Open browser in MAIN THREAD for better compatibility
+                self.call_from_thread(self.open_browser_for_login, url)
+            else:
+                self.call_from_thread(self.log_message, "Warning: No authentication URL found")
             
             # Wait a bit for login process
             time.sleep(2)
@@ -360,11 +416,41 @@ class InternxtSyncApp(App):
             import traceback
             self.call_from_thread(self.log_message, f"Traceback: {traceback.format_exc()}")
 
+    def open_browser_for_login(self, url):
+        """Opens browser in main thread context for better compatibility"""
+        import subprocess
+        try:
+            # Try xdg-open first (better Linux compatibility, especially Wayland)
+            subprocess.Popen(['xdg-open', url], 
+                           stdout=subprocess.DEVNULL, 
+                           stderr=subprocess.DEVNULL)
+            self.log_message(f"Opened browser with xdg-open: {url}")
+        except Exception as e:
+            # Fallback to webbrowser module
+            try:
+                import webbrowser
+                webbrowser.open(url)
+                self.log_message(f"Opened browser with webbrowser: {url}")
+            except Exception as e2:
+                self.log_message(f"Failed to open browser: {e}, {e2}")
+                self.log_message(f"Please open manually: {url}")
+
     @work(exclusive=True, thread=True)
     def start_webdav_and_load(self):
         if self.client.use_cli:
             self.log_message("Using CLI mode.")
-            self.call_from_thread(self.refresh_remote, self.remote_path)
+            # Try to list remote, if it fails with credentials error, trigger login
+            try:
+                self.client.list_remote("/")
+                self.call_from_thread(self.refresh_remote, self.remote_path)
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "missing credentials" in error_msg or "please login" in error_msg:
+                    self.log_message("Credentials missing. Triggering login...")
+                    self.call_from_thread(self.trigger_login_from_error)
+                else:
+                    self.log_message(f"Remote List Error: {e}")
+                    self.call_from_thread(self.refresh_remote, self.remote_path)
             return
 
         self.log_message("Checking WebDAV connectivity...")
@@ -390,6 +476,17 @@ class InternxtSyncApp(App):
                 time.sleep(1)
                 if i == max_retries - 1:
                     self.log_message("WebDAV timeout. Try refreshing manually (r).")
+
+    def trigger_login_from_error(self):
+        """Triggered when credentials are missing during operation"""
+        def on_login_decision(should_login):
+            if should_login:
+                self.log_message("User confirmed login. Starting process...")
+                self.run_login_process()
+            else:
+                self.log_message("Login cancelled by user.")
+        
+        self.push_screen(LoginScreen(), on_login_decision)
 
     def on_unmount(self):
         self.client.stop_webdav()
@@ -507,6 +604,13 @@ class InternxtSyncApp(App):
             self.call_from_thread(tree.root.expand)
             self.call_from_thread(stats_label.update, f"Files: {len(files)} | Size: {self._format_size(total_size)}")
             self.call_from_thread(progress.update, progress=100)
+
+            # Imposta focus automatico sulla prima voce se il tree ha focus
+            def set_cursor_first():
+                if tree.has_focus and tree.root.children:
+                    tree.cursor_line = 0
+            self.call_from_thread(set_cursor_first)
+
             # Reset progress bar after a short delay
             def reset_progress():
                 progress.update(progress=0)
@@ -668,10 +772,13 @@ class InternxtSyncApp(App):
 
     @work(thread=True)
     def run_sync_analysis(self, local_root, remote_root, exclude_hidden, zip_mode):
-        # Disable panes during sync? 
-        # self.query_one("#left_pane").disabled = True # Visual feedback might be enough
+        # Disable panels and show progress during analysis
+        self.call_from_thread(self.disable_panels)
+        self.call_from_thread(self.show_sync_loader)
         
         progress = self.query_one("#right_pane_progress")
+        stats_label = self.query_one("#right_pane_stats")
+        self.call_from_thread(stats_label.update, "Analyzing...")
         self.call_from_thread(progress.update, total=None) # Indeterminate initially
 
         if zip_mode:
@@ -713,6 +820,9 @@ class InternxtSyncApp(App):
         except Exception as e:
             self.log_message(f"Sync Scan Error: {e}")
             self.call_from_thread(progress.update, progress=0)
+            # In caso di errore, riabilita pannelli e nascondi loader
+            self.call_from_thread(self.enable_panels)
+            self.call_from_thread(self.hide_sync_loader)
             return
         
         to_upload, to_create, to_delete = self.sync_engine.compare(local_items, remote_items)
@@ -730,6 +840,12 @@ class InternxtSyncApp(App):
         def on_confirm(selected_deletions):
             if selected_deletions is None:
                 self.log_message("Sync cancelled.")
+                # Riabilita i pannelli e nascondi il loader (se attivo)
+                self.enable_panels()
+                try:
+                    self.hide_sync_loader()
+                except Exception:
+                    pass
                 return
             # Re-calculate total ops based on selected deletions
             new_total = len(to_upload) + len(to_create) + len(selected_deletions)
@@ -737,9 +853,32 @@ class InternxtSyncApp(App):
 
         self.push_screen(DeletionConfirmScreen(to_delete), on_confirm)
 
+    def disable_panels(self):
+        """Disable panels during sync operations"""
+        left_pane = self.query_one("#left_pane")
+        right_pane = self.query_one("#right_pane")
+        left_pane.add_class("pane_disabled")
+        right_pane.add_class("pane_disabled")
+        left_pane.disabled = True
+        right_pane.disabled = True
+        self.query_one("#right_pane_stats").update("Syncing...")
+
+    def enable_panels(self):
+        """Re-enable panels after sync operations"""
+        left_pane = self.query_one("#left_pane")
+        right_pane = self.query_one("#right_pane")
+        left_pane.remove_class("pane_disabled")
+        right_pane.remove_class("pane_disabled")
+        left_pane.disabled = False
+        right_pane.disabled = False
+
     @work(thread=True)
     def run_sync_execution(self, to_upload, to_create, to_delete, local_root, remote_root, total_ops):
+        # Disable panels during sync
+        self.call_from_thread(self.disable_panels)
+        
         progress = self.query_one("#right_pane_progress")
+        stats_label = self.query_one("#right_pane_stats")
         self.call_from_thread(progress.update, total=total_ops, progress=0)
         
         completed_ops = 0
@@ -747,6 +886,7 @@ class InternxtSyncApp(App):
         for rel_path in to_create:
             remote_path = os.path.join(remote_root, rel_path).replace("\\", "/") 
             self.log_message(f"Creating dir: {rel_path}")
+            self.call_from_thread(stats_label.update, f"Creating: {rel_path[:30]}...")
             try:
                 self.client.create_directory(remote_path)
             except Exception as e:
@@ -757,6 +897,7 @@ class InternxtSyncApp(App):
         for abs_path, rel_path in to_upload:
             remote_path = os.path.join(remote_root, rel_path).replace("\\", "/")
             self.log_message(f"Uploading: {rel_path}")
+            self.call_from_thread(stats_label.update, f"Uploading: {rel_path[:30]}...")
             try:
                 self.client.upload_file(abs_path, remote_path)
             except Exception as e:
@@ -767,6 +908,7 @@ class InternxtSyncApp(App):
         for rel_path in to_delete:
             remote_path = os.path.join(remote_root, rel_path).replace("\\", "/")
             self.log_message(f"Deleting: {rel_path}")
+            self.call_from_thread(stats_label.update, f"Deleting: {rel_path[:30]}...")
             try:
                 self.client.delete_item(remote_path)
             except Exception as e:
@@ -775,13 +917,93 @@ class InternxtSyncApp(App):
             self.call_from_thread(progress.update, progress=completed_ops)
 
         self.log_message("Sync complete.")
+        self.call_from_thread(stats_label.update, "Sync complete!")
         
         # Reset progress bar after delay
         def reset_progress():
             progress.update(progress=0)
         self.call_from_thread(self.set_timer, 1.0, reset_progress)
         
+        # Re-enable panels
+        self.call_from_thread(self.enable_panels)
+        
         self.call_from_thread(self.refresh_remote, remote_root)
+
+    def action_delete_item(self):
+        """Delete selected file or folder from current panel"""
+        left_tree = self.query_one("#left_pane_tree")
+        right_tree = self.query_one("#right_pane_tree")
+        
+        # Determine which tree has focus
+        if left_tree.has_focus:
+            tree = left_tree
+            is_remote = False
+        elif right_tree.has_focus:
+            tree = right_tree
+            is_remote = True
+        else:
+            self.notify("No panel selected", severity="warning")
+            return
+        
+        # Get selected node
+        if tree.cursor_line == -1 or not tree.root.children:
+            self.notify("No item selected", severity="warning")
+            return
+        
+        selected_node = tree.root.children[tree.cursor_line]
+        data = selected_node.data
+        
+        if not data:
+            self.notify("Cannot delete this item", severity="warning")
+            return
+        
+        # Don't allow deleting ".." (parent directory)
+        if data.get("is_up"):
+            self.notify("Cannot delete parent directory", severity="warning")
+            return
+        
+        item_path = data["path"]
+        item_name = os.path.basename(item_path)
+        item_type = "folder" if data["type"] == "dir" else "file"
+        
+        def on_confirm(confirmed):
+            if confirmed:
+                if is_remote:
+                    self.run_delete_remote(item_path, item_name)
+                else:
+                    self.run_delete_local(item_path, item_name)
+        
+        self.push_screen(ConfirmScreen(f"Delete {item_type}: {item_name}?"), on_confirm)
+
+    @work(thread=True)
+    def run_delete_local(self, path, name):
+        """Delete local file or folder"""
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+                self.log_message(f"Deleted local folder: {name}")
+            else:
+                os.remove(path)
+                self.log_message(f"Deleted local file: {name}")
+            
+            # Refresh local panel
+            self.call_from_thread(self.refresh_local, self.local_path)
+        except Exception as e:
+            self.log_message(f"Error deleting local item: {e}")
+            self.call_from_thread(self.notify, f"Delete failed: {e}", severity="error")
+
+    @work(thread=True)
+    def run_delete_remote(self, path, name):
+        """Delete remote file or folder"""
+        try:
+            self.client.delete_item(path)
+            self.log_message(f"Deleted remote item: {name}")
+            
+            # Refresh remote panel
+            self.call_from_thread(self.refresh_remote, self.remote_path)
+        except Exception as e:
+            self.log_message(f"Error deleting remote item: {e}")
+            self.call_from_thread(self.notify, f"Delete failed: {e}", severity="error")
 
     def log_message(self, msg):
         self.query_one("#app_log", Log).write_line(f"[{time.strftime('%H:%M:%S')}] {msg}")
