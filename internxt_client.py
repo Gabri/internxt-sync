@@ -313,11 +313,18 @@ class InternxtClient:
                 })
             # Files
             for f in data["list"].get("files", []):
-                # Preferisci sempre il nome completo (con estensione) se esiste
-                fullname = f.get("name")
+                # The 'plainName' field contains the actual filename with extension
+                # The 'name' field may contain encrypted/hashed values
+                # Priority: plainName > name
                 plain = f.get("plainName")
-                # Se 'name' non c'è per qualche motivo, fallback a 'plainName'
-                name = fullname or plain
+                fullname = f.get("name")
+                
+                # Use plainName if available, otherwise fallback to name
+                name = plain if plain else fullname
+                
+                if not name:
+                    # Skip files without a name
+                    continue
                 
                 item_path = os.path.join(path, name).replace("\\", "/")
                 # Use UUID for CLI operations

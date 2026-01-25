@@ -5,9 +5,21 @@ class SyncEngine:
     def __init__(self, client):
         self.client = client
 
+    def _calculate_file_hash(self, file_path):
+        """Calculate SHA256 hash of a file."""
+        sha256_hash = hashlib.sha256()
+        try:
+            with open(file_path, "rb") as f:
+                # Read in chunks to handle large files
+                for byte_block in iter(lambda: f.read(4096), b""):
+                    sha256_hash.update(byte_block)
+            return sha256_hash.hexdigest()
+        except Exception:
+            return None
+
     def scan_local(self, root_path, exclude_hidden=True):
         """Recursively scans local directory."""
-        items = {} # path_relative_to_root -> {type, size, mtime, abs_path}
+        items = {} # path_relative_to_root -> {type, size, mtime, abs_path, hash}
         
         for root, dirs, files in os.walk(root_path):
             # Modify dirs in-place to skip hidden directories
@@ -24,12 +36,16 @@ class SyncEngine:
                     stat = os.stat(abs_path)
                     if stat.st_size == 0: # Skip empty files
                         continue
+                    
+                    # Calculate hash for content comparison
+                    file_hash = self._calculate_file_hash(abs_path)
                         
                     items[rel_path] = {
                         'type': 'file',
                         'size': stat.st_size,
                         'mtime': stat.st_mtime,
-                        'abs_path': abs_path
+                        'abs_path': abs_path,
+                        'hash': file_hash
                     }
                 except OSError:
                     pass
@@ -48,7 +64,7 @@ class SyncEngine:
         # This might be slow. We'll implement a recursive function.
         # root_remote_path should be absolute path on remote (e.g. /Photos)
         
-        items = {} # rel_path -> {type, size}
+        items = {} # rel_path -> {type, size, hash}
         
         # Helper to recurse
         def _recurse(current_remote_path, rel_base):
@@ -73,7 +89,9 @@ class SyncEngine:
                 else:
                     items[child_rel_path] = {
                         'type': 'file', 
-                        'size': child['size']
+                        'size': child['size'],
+                        'hash': child.get('hash'),  # Get hash if available from remote
+                        'remote_path': child['path']  # Store full remote path for deletion
                     }
         
         # Start recursion
@@ -82,9 +100,9 @@ class SyncEngine:
 
     def compare(self, local_items, remote_items):
         """
-        Compares local and remote items.
+        Compares local and remote items using content hash.
         Returns:
-            to_upload: list of (local_abs_path, remote_rel_path)
+            to_upload: list of (local_abs_path, remote_rel_path, needs_delete)
             to_create_dirs: list of remote_rel_path
             to_delete: list of remote_rel_path
         """
@@ -101,22 +119,31 @@ class SyncEngine:
             else:
                 # File
                 should_upload = False
+                needs_delete = False
+                
                 if rel_path not in remote_items:
+                    # File doesn't exist remotely
                     should_upload = True
                 elif remote_items[rel_path]['type'] != 'file':
                     # It's a directory remotely? Collision.
-                    # We might want to delete remote dir and upload file, or skip.
-                    # For now, let's assume overwrite/fix.
                     should_upload = True
+                    needs_delete = True
                 else:
-                    # Exists remotely. Check size.
-                    # Mtime check is unreliable on WebDAV unless we parse ISO dates carefully.
-                    # Simple size check is a good start.
-                    if l_data['size'] != remote_items[rel_path]['size']:
+                    # File exists remotely - compare by hash first, then size
+                    r_data = remote_items[rel_path]
+                    
+                    # If both have hashes, compare them (most reliable)
+                    if l_data.get('hash') and r_data.get('hash'):
+                        if l_data['hash'] != r_data['hash']:
+                            should_upload = True
+                            needs_delete = True  # Need to delete before re-upload
+                    # Otherwise fall back to size comparison
+                    elif l_data['size'] != r_data['size']:
                         should_upload = True
+                        needs_delete = True  # Need to delete before re-upload
                 
                 if should_upload:
-                    to_upload.append((l_data['abs_path'], rel_path))
+                    to_upload.append((l_data['abs_path'], rel_path, needs_delete))
 
         # Check for deletions (Remote items that are not in local)
         for rel_path, r_data in remote_items.items():

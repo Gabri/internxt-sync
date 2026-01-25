@@ -77,7 +77,7 @@ class DeletionConfirmScreen(ModalScreen):
         yield Vertical(
             Label("The following items exist remotely but NOT locally."),
             Label("Select items to DELETE from remote (Space to toggle):"),
-            SelectionList(*[(path, path, False) for path in self.deletions], id="del_list", classes="del_list"),
+            Tree("Remote Deletions", id="del_tree", classes="del_list"),
             Horizontal(
                 Button("Confirm Sync", variant="error", id="confirm"),
                 Button("Cancel", variant="primary", id="cancel"),
@@ -86,13 +86,93 @@ class DeletionConfirmScreen(ModalScreen):
             classes="modal_dialog_large"
         )
 
+    def on_mount(self):
+        tree = self.query_one("#del_tree", Tree)
+        tree.show_root = False
+        nodes = {}
+        # All items are pre-selected for deletion
+        for path in sorted(self.deletions):
+            parts = path.strip("/").split("/")
+            current_path = ""
+            parent_node = tree.root
+            for i, part in enumerate(parts):
+                current_path = os.path.join(current_path, part)
+                if current_path not in nodes:
+                    is_dir = (i < len(parts) - 1) or (path.endswith("/"))
+                    node = parent_node.add("", data={"path": current_path, "is_dir": is_dir, "selected": True})
+                    self._update_node_label(node)
+                    nodes[current_path] = node
+                parent_node = nodes[current_path]
+
+    def on_key(self, event: events.Key):
+        if event.key == "space":
+            tree = self.query_one("#del_tree", Tree)
+            if tree.cursor_node:
+                self.toggle_selection(tree.cursor_node)
+                event.stop()
+
+    def toggle_selection(self, node):
+        """Toggles the selection state of a node and its children."""
+        node.data["selected"] = not node.data["selected"]
+        self._update_node_label(node)
+
+        if node.data["is_dir"]:
+            for child in node.children:
+                self._set_child_selection(child, node.data["selected"])
+        
+        if node.parent and node.parent.data: # Do not update root
+             self._update_parent_selection(node.parent)
+
+    def _set_child_selection(self, node, selected):
+        """Recursively sets the selection state for a node and its children."""
+        node.data["selected"] = selected
+        self._update_node_label(node)
+        for child in node.children:
+            self._set_child_selection(child, selected)
+
+    def _update_parent_selection(self, node):
+        """Recursively updates the selection state of parent nodes."""
+        if all(child.data["selected"] for child in node.children):
+            node.data["selected"] = True
+        else:
+            node.data["selected"] = False
+        self._update_node_label(node)
+        if node.parent and node.parent.data: # Do not update root
+            self._update_parent_selection(node.parent)
+
+    def _update_node_label(self, node):
+        """Updates the node's label to show its selection state."""
+        selected = node.data["selected"]
+        is_dir = node.data["is_dir"]
+        name = os.path.basename(node.data["path"])
+        icon = "📁" if is_dir else "📄"
+        prefix = "☑" if selected else "☐"
+        node.label = f"{prefix} {icon} {name}"
+
     @on(Button.Pressed, "#confirm")
     def confirm(self):
-        selection_list = self.query_one("#del_list", SelectionList)
-        self.dismiss(selection_list.selected)
+        """Dismisses the screen, returning the list of paths to delete."""
+        tree = self.query_one("#del_tree", Tree)
+        selected_paths = set()
+
+        def collect_selected_paths(node):
+            # If a node is selected and it's a directory, we can add its path and stop recursing
+            if node.data and node.data["selected"]:
+                selected_paths.add(node.data["path"])
+                return
+
+            # If a node is not selected, but some of its children might be, we need to check them
+            for child in node.children:
+                collect_selected_paths(child)
+
+        for node in tree.root.children:
+            collect_selected_paths(node)
+            
+        self.dismiss(list(selected_paths))
 
     @on(Button.Pressed, "#cancel")
     def cancel(self):
+        """Dismisses the screen without returning any paths."""
         self.dismiss(None)
 
 class ConfirmScreen(ModalScreen):
@@ -331,12 +411,19 @@ class InternxtSyncApp(App):
         self.local_path = os.getcwd()
         self.remote_path = "/"
 
-    def show_sync_loader(self, total=100):
+    def show_sync_loader(self, total=None):
         """Mostra il loader di sync (overlay)."""
         container = self.query_one("#sync_loader_container")
         container.styles.display = "block"
         progress = self.query_one("#sync_progress", ProgressBar)
-        progress.update(total=total, progress=0)
+        label = self.query_one("#sync_status_label", Label)
+        
+        if total is None:
+            label.update("Analyzing...")
+            progress.update(total=total) # Indeterminate
+        else:
+            label.update("Syncing...")
+            progress.update(total=total, progress=0)
 
     def hide_sync_loader(self):
         """Nasconde il loader di sync (overlay)."""
@@ -716,13 +803,17 @@ class InternxtSyncApp(App):
     # --- Interaction ---
 
     @on(Tree.NodeSelected)
-    def on_node_selected(self, event):
+    def on_node_selected(self, event: Tree.NodeSelected):
+        # This event is for the main file system trees, not the deletion confirmation tree.
+        if event.control.id not in ("left_pane_tree", "right_pane_tree"):
+            return
+
         node = event.node
         data = node.data
         if not data: return
 
         tree = event.control
-        if data["type"] == "dir":
+        if data.get("type") == "dir":
             new_path = data["path"]
             if tree.id == "left_pane_tree":
                 self.refresh_local(new_path)
@@ -798,7 +889,7 @@ class InternxtSyncApp(App):
     def run_sync_analysis(self, local_root, remote_root, exclude_hidden, zip_mode):
         # Disable panels and show progress during analysis
         self.call_from_thread(self.disable_panels)
-        self.call_from_thread(self.show_sync_loader)
+        self.call_from_thread(self.show_sync_loader, total=None) # Indeterminate
         
         progress = self.query_one("#right_pane_progress")
         stats_label = self.query_one("#right_pane_stats")
@@ -901,63 +992,62 @@ class InternxtSyncApp(App):
         # Show sync loader with progress bar
         self.call_from_thread(self.show_sync_loader, total_ops)
         
-        progress = self.query_one("#right_pane_progress")
-        stats_label = self.query_one("#right_pane_stats")
-        self.call_from_thread(progress.update, total=total_ops, progress=0)
-        
         completed_ops = 0
 
         for rel_path in to_create:
             remote_path = os.path.join(remote_root, rel_path).replace("\\", "/") 
             self.log_message(f"Creating dir: {rel_path}")
-            self.call_from_thread(stats_label.update, f"Creating: {rel_path[:30]}...")
-            self.call_from_thread(self.update_sync_progress, completed_ops, f"Creating: {rel_path[:40]}...")
+            status_text = f"Creating: {rel_path[:40]}..."
+            self.call_from_thread(self.update_sync_progress, completed_ops, status_text)
             try:
                 self.client.create_directory(remote_path)
             except Exception as e:
                 self.log_message(f"Error creating dir {rel_path}: {e}")
             completed_ops += 1
-            self.call_from_thread(progress.update, progress=completed_ops)
             self.call_from_thread(self.update_sync_progress, completed_ops)
 
-        for abs_path, rel_path in to_upload:
+        for upload_item in to_upload:
+            abs_path, rel_path, needs_delete = upload_item
             remote_path = os.path.join(remote_root, rel_path).replace("\\", "/")
+            
+            # If file exists and needs update, delete it first
+            if needs_delete:
+                self.log_message(f"Deleting existing: {rel_path}")
+                status_text = f"Deleting: {rel_path[:40]}..."
+                self.call_from_thread(self.update_sync_progress, completed_ops, status_text)
+                try:
+                    self.client.delete_item(remote_path)
+                except Exception as e:
+                    self.log_message(f"Warning: Could not delete {rel_path}: {e}")
+            
             self.log_message(f"Uploading: {rel_path}")
-            self.call_from_thread(stats_label.update, f"Uploading: {rel_path[:30]}...")
-            self.call_from_thread(self.update_sync_progress, completed_ops, f"Uploading: {rel_path[:40]}...")
+            status_text = f"Uploading: {rel_path[:40]}..."
+            self.call_from_thread(self.update_sync_progress, completed_ops, status_text)
             try:
                 self.client.upload_file(abs_path, remote_path)
             except Exception as e:
                 self.log_message(f"Error uploading {rel_path}: {e}")
             completed_ops += 1
-            self.call_from_thread(progress.update, progress=completed_ops)
             self.call_from_thread(self.update_sync_progress, completed_ops)
 
         for rel_path in to_delete:
             remote_path = os.path.join(remote_root, rel_path).replace("\\", "/")
             self.log_message(f"Deleting: {rel_path}")
-            self.call_from_thread(stats_label.update, f"Deleting: {rel_path[:30]}...")
-            self.call_from_thread(self.update_sync_progress, completed_ops, f"Deleting: {rel_path[:40]}...")
+            status_text = f"Deleting: {rel_path[:40]}..."
+            self.call_from_thread(self.update_sync_progress, completed_ops, status_text)
             try:
                 self.client.delete_item(remote_path)
             except Exception as e:
                 self.log_message(f"Error deleting {rel_path}: {e}")
             completed_ops += 1
-            self.call_from_thread(progress.update, progress=completed_ops)
             self.call_from_thread(self.update_sync_progress, completed_ops)
 
         self.log_message("Sync complete.")
-        self.call_from_thread(stats_label.update, "Sync complete!")
         self.call_from_thread(self.update_sync_progress, completed_ops, "Sync complete!")
         
         # Hide sync loader after a short delay
         time.sleep(1)
         self.call_from_thread(self.hide_sync_loader)
-        
-        # Reset progress bar after delay
-        def reset_progress():
-            progress.update(progress=0)
-        self.call_from_thread(self.set_timer, 1.0, reset_progress)
         
         # Re-enable panels
         self.call_from_thread(self.enable_panels)
