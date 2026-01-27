@@ -313,16 +313,25 @@ class InternxtClient:
                 })
             # Files
             for f in data["list"].get("files", []):
-                # The 'plainName' field contains the actual filename with extension
+                # The 'plainName' field contains the actual filename (may or may not have extension)
                 # The 'name' field may contain encrypted/hashed values
-                # Priority: plainName > name
+                # The 'type' field contains the extension (e.g., "py", "txt")
                 plain = f.get("plainName")
-                fullname = f.get("name")
+                file_type = f.get("type")
                 
-                # Use plainName if available, otherwise fallback to name
-                name = plain if plain else fullname
-                
-                if not name:
+                # Priority: plainName > plainName + type
+                if plain:
+                    # Check if plainName already has an extension
+                    if "." in plain:
+                        # Already has extension
+                        name = plain
+                    elif file_type:
+                        # Add extension from type field
+                        name = f"{plain}.{file_type}"
+                    else:
+                        # No extension available
+                        name = plain
+                else:
                     # Skip files without a name
                     continue
                 
@@ -547,10 +556,43 @@ class InternxtClient:
             requests.request("MKCOL", url, verify=False)
 
     def delete_item(self, remote_path):
+        """Delete a file or folder from remote storage."""
         if self.use_cli:
-            # CLI trash-file or trash-folder
-            subprocess.run(["internxt", "trash-file", remote_path], capture_output=True)
-            subprocess.run(["internxt", "trash-folder", remote_path], capture_output=True)
+            # Try to get the item ID from cache
+            file_id = self.folder_id_cache.get(f"FILE:{remote_path}")
+            folder_id = self.folder_id_cache.get(remote_path)
+            
+            # If not in cache, try to find it by listing parent
+            if not file_id and not folder_id:
+                parent_path = os.path.dirname(remote_path)
+                try:
+                    self.list_remote_cli(parent_path)
+                    file_id = self.folder_id_cache.get(f"FILE:{remote_path}")
+                    folder_id = self.folder_id_cache.get(remote_path)
+                except:
+                    pass
+            
+            # Try to delete as file first
+            if file_id:
+                cmd = ["internxt", "trash-file", "-x", "-i", file_id]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode == 0:
+                    return
+                # If file delete fails, try folder
+            
+            # Try to delete as folder
+            if folder_id:
+                cmd = ["internxt", "trash-folder", "-x", "-i", folder_id]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode == 0:
+                    return
+            
+            # If we have neither ID, raise error
+            if not file_id and not folder_id:
+                raise Exception(f"Could not find ID for {remote_path} to delete")
+            
+            # If we got here, both attempts failed
+            raise Exception(f"Failed to delete {remote_path}")
         else:
             url = f"{self.webdav_url}{quote(remote_path)}"
             requests.delete(url, verify=False)

@@ -1017,14 +1017,18 @@ class InternxtSyncApp(App):
                 self.call_from_thread(self.update_sync_progress, completed_ops, status_text)
                 try:
                     self.client.delete_item(remote_path)
+                    self.log_message(f"Successfully deleted: {rel_path}")
                 except Exception as e:
                     self.log_message(f"Warning: Could not delete {rel_path}: {e}")
+                # Add a small delay to ensure deletion is processed
+                time.sleep(0.5)
             
             self.log_message(f"Uploading: {rel_path}")
             status_text = f"Uploading: {rel_path[:40]}..."
             self.call_from_thread(self.update_sync_progress, completed_ops, status_text)
             try:
                 self.client.upload_file(abs_path, remote_path)
+                self.log_message(f"Successfully uploaded: {rel_path}")
             except Exception as e:
                 self.log_message(f"Error uploading {rel_path}: {e}")
             completed_ops += 1
