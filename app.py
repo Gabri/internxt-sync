@@ -1,11 +1,8 @@
 from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, Tree, Label, Log, Button, SelectionList, Input, ProgressBar, Static, Checkbox, LoadingIndicator
-from textual.containers import Container, Horizontal, Vertical, Grid, Center
-from textual.screen import ModalScreen
+from textual.widgets import Header, Footer, Log, Button, ProgressBar, Label, Input
+from textual.containers import Container, Horizontal, Vertical, Center
+from textual import work, on
 from textual.worker import Worker, get_current_worker
-from textual import on, work, events
-from textual.message import Message
-from textual.reactive import reactive
 
 import os
 import time
@@ -15,231 +12,8 @@ import zipfile
 import requests
 from internxt_client import InternxtClient
 from sync_logic import SyncEngine
-
-# --- Screens ---
-
-class LoginScreen(ModalScreen):
-    """Screen to force login."""
-    def compose(self) -> ComposeResult:
-        yield Vertical(
-            Label("InterNxt not logged in or CLI not found."),
-            Label("Please log in using the browser window that will open."),
-            Horizontal(
-                Button("Login", id="login_btn"),
-                Button("Quit", id="quit_btn"),
-                classes="button_row"
-            ),
-            classes="modal_dialog"
-        )
-
-    @on(Button.Pressed, "#login_btn")
-    def on_login(self):
-        self.dismiss(True)
-
-    @on(Button.Pressed, "#quit_btn")
-    def on_quit(self):
-        self.app.exit()
-
-class SyncOptionsScreen(ModalScreen):
-    """Screen to configure sync options."""
-    def __init__(self, message):
-        super().__init__()
-        self.message = message
-
-    def compose(self) -> ComposeResult:
-        yield Vertical(
-            Label(self.message),
-            Checkbox("Exclude hidden files/folders (.*)", value=True, id="exclude_hidden"),
-            Checkbox("Zip content before upload", value=False, id="zip_mode"),
-            Horizontal(
-                Button("Start Sync", variant="success", id="start"),
-                Button("Cancel", variant="error", id="cancel"),
-                classes="button_row"
-            ),
-            classes="modal_dialog"
-        )
-
-    @on(Button.Pressed)
-    def action(self, event):
-        if event.button.id == "start":
-            exclude_hidden = self.query_one("#exclude_hidden", Checkbox).value
-            zip_mode = self.query_one("#zip_mode", Checkbox).value
-            self.dismiss((True, exclude_hidden, zip_mode))
-        else:
-            self.dismiss((False, False, False))
-
-class DeletionConfirmScreen(ModalScreen):
-    def __init__(self, deletions):
-        super().__init__()
-        self.deletions = deletions
-
-    def compose(self) -> ComposeResult:
-        yield Vertical(
-            Label("The following items exist remotely but NOT locally."),
-            Label("Select items to DELETE from remote (Space to toggle):"),
-            Tree("Remote Deletions", id="del_tree", classes="del_list"),
-            Horizontal(
-                Button("Confirm Sync", variant="error", id="confirm"),
-                Button("Cancel", variant="primary", id="cancel"),
-                classes="button_row"
-            ),
-            classes="modal_dialog_large"
-        )
-
-    def on_mount(self):
-        tree = self.query_one("#del_tree", Tree)
-        tree.show_root = False
-        nodes = {}
-        # All items are pre-selected for deletion
-        for path in sorted(self.deletions):
-            parts = path.strip("/").split("/")
-            current_path = ""
-            parent_node = tree.root
-            for i, part in enumerate(parts):
-                current_path = os.path.join(current_path, part)
-                if current_path not in nodes:
-                    is_dir = (i < len(parts) - 1) or (path.endswith("/"))
-                    node = parent_node.add("", data={"path": current_path, "is_dir": is_dir, "selected": True})
-                    self._update_node_label(node)
-                    nodes[current_path] = node
-                parent_node = nodes[current_path]
-
-    def on_key(self, event: events.Key):
-        if event.key == "space":
-            tree = self.query_one("#del_tree", Tree)
-            if tree.cursor_node:
-                self.toggle_selection(tree.cursor_node)
-                event.stop()
-
-    def toggle_selection(self, node):
-        """Toggles the selection state of a node and its children."""
-        node.data["selected"] = not node.data["selected"]
-        self._update_node_label(node)
-
-        if node.data["is_dir"]:
-            for child in node.children:
-                self._set_child_selection(child, node.data["selected"])
-        
-        if node.parent and node.parent.data: # Do not update root
-             self._update_parent_selection(node.parent)
-
-    def _set_child_selection(self, node, selected):
-        """Recursively sets the selection state for a node and its children."""
-        node.data["selected"] = selected
-        self._update_node_label(node)
-        for child in node.children:
-            self._set_child_selection(child, selected)
-
-    def _update_parent_selection(self, node):
-        """Recursively updates the selection state of parent nodes."""
-        if all(child.data["selected"] for child in node.children):
-            node.data["selected"] = True
-        else:
-            node.data["selected"] = False
-        self._update_node_label(node)
-        if node.parent and node.parent.data: # Do not update root
-            self._update_parent_selection(node.parent)
-
-    def _update_node_label(self, node):
-        """Updates the node's label to show its selection state."""
-        selected = node.data["selected"]
-        is_dir = node.data["is_dir"]
-        name = os.path.basename(node.data["path"])
-        icon = "📁" if is_dir else "📄"
-        prefix = "☑" if selected else "☐"
-        node.label = f"{prefix} {icon} {name}"
-
-    @on(Button.Pressed, "#confirm")
-    def confirm(self):
-        """Dismisses the screen, returning the list of paths to delete."""
-        tree = self.query_one("#del_tree", Tree)
-        selected_paths = set()
-
-        def collect_selected_paths(node):
-            # If a node is selected and it's a directory, we can add its path and stop recursing
-            if node.data and node.data["selected"]:
-                selected_paths.add(node.data["path"])
-                return
-
-            # If a node is not selected, but some of its children might be, we need to check them
-            for child in node.children:
-                collect_selected_paths(child)
-
-        for node in tree.root.children:
-            collect_selected_paths(node)
-            
-        self.dismiss(list(selected_paths))
-
-    @on(Button.Pressed, "#cancel")
-    def cancel(self):
-        """Dismisses the screen without returning any paths."""
-        self.dismiss(None)
-
-class ConfirmScreen(ModalScreen):
-    def __init__(self, message):
-        super().__init__()
-        self.message = message
-
-    def compose(self) -> ComposeResult:
-        yield Vertical(
-            Label(self.message),
-            Horizontal(
-                Button("Yes", variant="success", id="yes"),
-                Button("No", variant="error", id="no"),
-                classes="button_row"
-            ),
-            classes="modal_dialog"
-        )
-
-    @on(Button.Pressed)
-    def action(self, event):
-        if event.button.id == "yes":
-            self.dismiss(True)
-        else:
-            self.dismiss(False)
-
-# --- Custom Widgets ---
-
-class FileSystemTree(Tree):
-    """
-    A Tree used as a flat file list (Norton Commander style).
-    It displays the contents of 'current_path'.
-    """
-    def __init__(self, *args, **kwargs):
-        super().__init__("root", *args, **kwargs)
-        self.current_path = "/"
-        self.is_remote = False
-        self.app_ref = None # To call methods on app
-
-    def on_mount(self):
-        self.show_root = False # Hide the technical root
-        self.guide_depth = 1
-
-    def on_key(self, event: events.Key):
-        if event.key == "up":
-            if self.cursor_line == 0:
-                self.post_message(self.FocusInput(self.id))
-                event.stop()
-
-    class FocusInput(Message):
-        def __init__(self, tree_id):
-            super().__init__()
-            self.tree_id = tree_id
-
-class Pane(Vertical):
-    """A pane containing an input, a tree, and a status bar."""
-    def __init__(self, title, id, **kwargs):
-        super().__init__(id=id, **kwargs)
-        self.title = title
-
-    def compose(self) -> ComposeResult:
-        yield Input(placeholder=self.title, id=f"{self.id}_input")
-        yield FileSystemTree(self.title, id=f"{self.id}_tree")
-        with Horizontal(classes="pane_footer"):
-            yield Label("Files: 0 | Size: 0 B", id=f"{self.id}_stats")
-            progress = ProgressBar(id=f"{self.id}_progress", show_eta=False, show_percentage=False)
-            progress.update(total=100, progress=0)
-            yield progress
+from ui_screens import LoginScreen, SyncOptionsScreen, DeletionConfirmScreen, ConfirmScreen
+from ui_widgets import FileSystemTree, Pane
 
 class InternxtSyncApp(App):
     CSS = """
@@ -556,8 +330,9 @@ class InternxtSyncApp(App):
                 self.call_from_thread(self.refresh_remote, self.remote_path)
             except Exception as e:
                 error_msg = str(e).lower()
-                if "missing credentials" in error_msg or "please login" in error_msg:
-                    self.log_message("Credentials missing. Triggering login...")
+                # UPDATED: Catch "unauthorized" as well
+                if "missing credentials" in error_msg or "please login" in error_msg or "unauthorized" in error_msg:
+                    self.log_message("Credentials missing or unauthorized. Triggering login...")
                     self.call_from_thread(self.trigger_login_from_error)
                 else:
                     self.log_message(f"Remote List Error: {e}")
@@ -638,24 +413,6 @@ class InternxtSyncApp(App):
         
         inp.can_focus = True
         inp.focus()
-
-    @on(Input.Submitted)
-    def on_path_submit(self, event):
-        inp = event.input
-        new_path = inp.value
-        inp.can_focus = False # Disable focus again after submit
-        
-        if inp.id == "left_pane_input":
-            if os.path.exists(new_path) and os.path.isdir(new_path):
-                self.local_path = new_path
-                self.refresh_local(new_path)
-                self.query_one("#left_pane_tree").focus()
-            else:
-                self.notify(f"Invalid local directory: {new_path}", severity="error")
-        elif inp.id == "right_pane_input":
-            self.remote_path = new_path
-            self.refresh_remote(new_path)
-            self.query_one("#right_pane_tree").focus()
 
     def action_refresh(self):
         self.refresh_local(self.local_path)
@@ -802,8 +559,8 @@ class InternxtSyncApp(App):
 
     # --- Interaction ---
 
-    @on(Tree.NodeSelected)
-    def on_node_selected(self, event: Tree.NodeSelected):
+    @on(FileSystemTree.NodeSelected)
+    def on_node_selected(self, event: FileSystemTree.NodeSelected):
         # This event is for the main file system trees, not the deletion confirmation tree.
         if event.control.id not in ("left_pane_tree", "right_pane_tree"):
             return
@@ -1144,7 +901,24 @@ class InternxtSyncApp(App):
             size /= 1024
         return f"{size:.1f} PB"
 
+    @on(Input.Submitted)
+    def on_path_submit(self, event):
+        inp = event.input
+        new_path = inp.value
+        inp.can_focus = False # Disable focus again after submit
+        
+        if inp.id == "left_pane_input":
+            if os.path.exists(new_path) and os.path.isdir(new_path):
+                self.local_path = new_path
+                self.refresh_local(new_path)
+                self.query_one("#left_pane_tree").focus()
+            else:
+                self.notify(f"Invalid local directory: {new_path}", severity="error")
+        elif inp.id == "right_pane_input":
+            self.remote_path = new_path
+            self.refresh_remote(new_path)
+            self.query_one("#right_pane_tree").focus()
+
 if __name__ == "__main__":
     app = InternxtSyncApp()
     app.run()
-

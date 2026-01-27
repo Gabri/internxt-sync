@@ -319,6 +319,13 @@ class InternxtClient:
                 plain = f.get("plainName")
                 file_type = f.get("type")
                 
+                # Debug logging
+                try:
+                    with open("debug_list.py", "a") as df:
+                         df.write(f"FILE: plain={plain}, type={file_type}, uuid={f.get('uuid')}\n")
+                except:
+                    pass
+
                 # Priority: plainName > plainName + type
                 if plain:
                     # Check if plainName already has an extension
@@ -450,9 +457,7 @@ class InternxtClient:
                     if resourcetype is not None:
                         # Check for <d:collection/> or <collection/>
                         # Some servers use {DAV:}collection
-                        if resourcetype.find('d:collection', namespaces) is not None or \
-                           resourcetype.find('collection', namespaces) is not None or \
-                           resourcetype.find('{DAV:}collection') is not None:
+                        if resourcetype.find('d:collection', namespaces) is not None or                            resourcetype.find('collection', namespaces) is not None or                            resourcetype.find('{DAV:}collection') is not None:
                             is_collection = True
                     
                     # Fallback: if href ends with / it's usually a directory
@@ -596,5 +601,3 @@ class InternxtClient:
         else:
             url = f"{self.webdav_url}{quote(remote_path)}"
             requests.delete(url, verify=False)
-
-
