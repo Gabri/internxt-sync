@@ -372,7 +372,7 @@ class InternxtClient:
                 parent_path = os.path.dirname(remote_path)
                 self.list_remote_cli(parent_path)
                 file_id = self.folder_id_cache.get(f"FILE:{remote_path}")
-            
+
             if not file_id:
                 raise Exception(f"Could not find ID for {remote_path}")
             

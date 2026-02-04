@@ -104,6 +104,14 @@ class InternxtSyncApp(App):
         height: 1fr;
     }
     
+    FileSystemTree > .tree--cursor {
+        background: $primary 30%;
+    }
+    
+    FileSystemTree > .tree--highlight {
+        background: $accent 20%;
+    }
+    
     Input {
         margin: 0;
         padding: 0 1;
@@ -169,7 +177,8 @@ class InternxtSyncApp(App):
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("tab", "toggle_pane", "Switch Pane"),
-        ("s", "sync", "Sync Local -> Remote"),
+        ("s", "sync", "Sync Folder Local -> Remote"),
+        ("f", "sync_file", "Sync Selected Item(s)"),
         ("d", "download", "Download Remote -> Local"),
         ("r", "refresh", "Refresh View"),
         ("ctrl+l", "focus_path", "Edit Path"),
@@ -439,6 +448,7 @@ class InternxtSyncApp(App):
         stats_label = self.query_one("#left_pane_stats")
         
         self.call_from_thread(stats_label.update, "Loading local...")
+        self.call_from_thread(tree.clear_selection)
         self.call_from_thread(tree.clear)
         self.call_from_thread(progress.update, total=100, progress=10)
         
@@ -522,6 +532,7 @@ class InternxtSyncApp(App):
     def populate_remote_tree(self, path, items):
         tree = self.query_one("#right_pane_tree")
         stats_label = self.query_one("#right_pane_stats")
+        tree.clear_selection()
         tree.clear()
         
         # Add ".."
@@ -606,6 +617,42 @@ class InternxtSyncApp(App):
         finally:
             self.call_from_thread(progress.update, total=100, progress=100)
 
+    def action_download(self):
+        """Download selected item from remote panel"""
+        right_tree = self.query_one("#right_pane_tree")
+        right_pane = self.query_one("#right_pane")
+
+        has_focus = right_tree.has_focus or right_pane.has_focus_within
+        if not has_focus:
+            self.notify("Switch to remote panel first (Tab)", severity="warning")
+            return
+
+        # Get selected node
+        if right_tree.cursor_line == -1 or not right_tree.root.children:
+            self.notify("No item selected", severity="warning")
+            return
+
+        selected_node = right_tree.root.children[right_tree.cursor_line]
+        data = selected_node.data
+        
+        if not data:
+            self.notify("Cannot download this item", severity="warning")
+            return
+        
+        # Don't allow downloading ".." (parent directory)
+        if data.get("is_up"):
+            self.notify("Cannot download parent directory", severity="warning")
+            return
+        
+        remote_path = data["path"]
+        
+        # Only download files for now (folders would need recursive download)
+        if data["type"] == "dir":
+            self.notify("Folder download not yet implemented. Use sync instead.", severity="warning")
+            return
+        
+        self.action_download_item(remote_path)
+
     def action_download_item(self, remote_path):
         filename = os.path.basename(remote_path)
         local_target = os.path.join(self.local_path, filename)
@@ -641,6 +688,97 @@ class InternxtSyncApp(App):
                 self.run_sync_analysis(self.local_path, self.remote_path, exclude_hidden, zip_mode)
 
         self.push_screen(SyncOptionsScreen(f"Sync local content to remote folder?"), start_sync_process)
+
+    def action_sync_file(self):
+        """Sync selected file(s) or folder(s) from local panel to remote"""
+        left_tree = self.query_one("#left_pane_tree")
+        left_pane = self.query_one("#left_pane")
+
+        has_focus = left_tree.has_focus or left_pane.has_focus_within
+        if not has_focus:
+            self.notify("Switch to local panel first (Tab)", severity="warning")
+            return
+
+        selected_items = left_tree.get_selected_items()
+
+        if not selected_items:
+            self.notify("No item selected", severity="warning")
+            return
+
+        valid_items = [item for item in selected_items if not item.get("is_up")]
+        if not valid_items:
+            self.notify("Cannot sync parent directory", severity="warning")
+            return
+
+        files_to_upload = [item for item in valid_items if item["type"] == "file"]
+        folders_to_sync = [item for item in valid_items if item["type"] == "dir"]
+
+        total_items = len(files_to_upload) + len(folders_to_sync)
+        item_names = [os.path.basename(item["path"]) for item in valid_items[:3]]
+        display_names = ", ".join(item_names)
+        if total_items > 3:
+            display_names += f" and {total_items - 3} more"
+
+        def on_confirm(confirmed):
+            if confirmed:
+                for item in files_to_upload:
+                    local_path = item["path"]
+                    item_name = os.path.basename(local_path)
+                    remote_dest = os.path.join(self.remote_path, item_name).replace("\\", "/")
+                    self.log_message(f"Uploading file: {item_name}")
+                    self.run_upload_single_file(local_path, remote_dest, item_name)
+
+                for item in folders_to_sync:
+                    local_path = item["path"]
+                    item_name = os.path.basename(local_path)
+                    remote_dest = os.path.join(self.remote_path, item_name).replace("\\", "/")
+                    self.log_message(f"Syncing folder: {item_name}")
+                    self.run_sync_analysis(local_path, remote_dest, exclude_hidden=True, zip_mode=False)
+
+            left_tree.clear_selection()
+
+        item_label = "items" if total_items > 1 else valid_items[0]["type"]
+        msg = f"Upload {total_items} {item_label} to remote?\n{display_names}"
+        self.push_screen(ConfirmScreen(msg), on_confirm)
+
+    @work(thread=True)
+    def run_upload_single_file(self, local_path, remote_path, filename):
+        """Upload a single file to remote"""
+        progress = self.query_one("#left_pane_progress")
+        self.call_from_thread(progress.update, total=None)  # Indeterminate
+        
+        try:
+            # Check if file already exists on remote
+            parent_remote = os.path.dirname(remote_path)
+            try:
+                items = self.client.list_remote(parent_remote)
+                file_exists = any(item['name'] == filename and not item['is_dir'] for item in items)
+                
+                if file_exists:
+                    self.log_message(f"File exists, deleting old version: {filename}")
+                    try:
+                        self.client.delete_item(remote_path)
+                        time.sleep(0.5)  # Wait for deletion to complete
+                    except Exception as e:
+                        self.log_message(f"Warning: Could not delete existing file: {e}")
+            except Exception as e:
+                self.log_message(f"Could not check if file exists: {e}")
+            
+            # Upload the file
+            self.client.upload_file(local_path, remote_path)
+            self.log_message(f"Upload complete: {filename}")
+            self.call_from_thread(self.notify, f"Uploaded: {filename}")
+            
+            # Refresh remote panel
+            self.call_from_thread(self.refresh_remote, self.remote_path)
+        except Exception as e:
+            self.log_message(f"Upload error: {e}")
+            self.call_from_thread(self.notify, f"Upload failed: {e}", severity="error")
+        finally:
+            self.call_from_thread(progress.update, total=100, progress=100)
+            def reset():
+                progress.update(progress=0)
+            self.call_from_thread(self.set_timer, 1.0, reset)
 
     @work(thread=True)
     def run_sync_analysis(self, local_root, remote_root, exclude_hidden, zip_mode):
