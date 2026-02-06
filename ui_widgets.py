@@ -147,6 +147,6 @@ class Pane(Vertical):
         yield FileSystemTree(self.title, id=f"{self.id}_tree")
         with Horizontal(classes="pane_footer"):
             yield Label("Files: 0 | Size: 0 B", id=f"{self.id}_stats")
-            progress = ProgressBar(id=f"{self.id}_progress", show_eta=False, show_percentage=False)
+            progress = ProgressBar(id=f"{self.id}_progress", show_eta=True, show_percentage=True)
             progress.update(total=100, progress=0)
             yield progress

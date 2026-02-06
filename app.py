@@ -12,8 +12,17 @@ import zipfile
 import requests
 from internxt_client import InternxtClient
 from sync_logic import SyncEngine
-from ui_screens import LoginScreen, SyncOptionsScreen, DeletionConfirmScreen, ConfirmScreen
+from ui_screens import (
+    LoginScreen,
+    SyncOptionsScreen,
+    DeletionConfirmScreen,
+    ConfirmScreen,
+    CreateFolderScreen,
+    TrashScreen,
+    RenameScreen,
+)
 from ui_widgets import FileSystemTree, Pane
+
 
 class InternxtSyncApp(App):
     CSS = """
@@ -64,7 +73,13 @@ class InternxtSyncApp(App):
         height: 1fr;
         min-height: 5;
     }
-    
+
+    .modal_dialog_large > Tree.trash_list {
+        height: 1fr;
+        min-height: 10;
+        max-height: 20;
+    }
+
     .button_row {
         align: center middle;
         height: 3;
@@ -143,6 +158,11 @@ class InternxtSyncApp(App):
         width: 25;
         height: 1;
         margin-left: 1;
+        background: $surface-darken-1;
+    }
+    
+    ProgressBar > .bar {
+        background: $primary;
     }
     
     #sync_loader_container {
@@ -185,6 +205,9 @@ class InternxtSyncApp(App):
         ("z", "calc_size", "Calc Folder Size"),
         ("m", "toggle_mode", "Toggle CLI/WebDAV"),
         ("delete", "delete_item", "Delete File/Folder"),
+        ("n", "create_folder", "New Folder"),
+        ("t", "view_trash", "View Trash"),
+        ("f2", "rename_item", "Rename File/Folder"),
     ]
 
     def __init__(self):
@@ -200,10 +223,10 @@ class InternxtSyncApp(App):
         container.styles.display = "block"
         progress = self.query_one("#sync_progress", ProgressBar)
         label = self.query_one("#sync_status_label", Label)
-        
+
         if total is None:
             label.update("Analyzing...")
-            progress.update(total=total) # Indeterminate
+            progress.update(total=total)  # Indeterminate
         else:
             label.update("Syncing...")
             progress.update(total=total, progress=0)
@@ -212,7 +235,7 @@ class InternxtSyncApp(App):
         """Nasconde il loader di sync (overlay)."""
         container = self.query_one("#sync_loader_container")
         container.styles.display = "none"
-    
+
     def update_sync_progress(self, progress, status_text=None):
         """Aggiorna la progress bar della sync."""
         try:
@@ -241,10 +264,11 @@ class InternxtSyncApp(App):
         with Center(id="sync_loader_container"):
             with Vertical(id="sync_loader"):
                 yield Label("Syncing...", id="sync_status_label")
-                yield ProgressBar(id="sync_progress", show_eta=True, show_percentage=True)
+                yield ProgressBar(
+                    id="sync_progress", show_eta=True, show_percentage=True
+                )
 
         yield Footer()
-
 
     def on_mount(self):
         # Disable direct focus on inputs and log
@@ -255,7 +279,7 @@ class InternxtSyncApp(App):
         # Configure trees
         self.query_one("#left_pane_tree").is_remote = False
         self.query_one("#left_pane_tree").app_ref = self
-        
+
         self.query_one("#right_pane_tree").is_remote = True
         self.query_one("#right_pane_tree").app_ref = self
 
@@ -265,7 +289,7 @@ class InternxtSyncApp(App):
         self.log_message("Checking Internxt status...")
         check = self.client.check_login()
         self.log_message(f"Login Check Result: {check}")
-        
+
         if not check:
             self.log_message("Not logged in. Showing Login Screen.")
             self.push_screen(LoginScreen(), self.after_login)
@@ -283,46 +307,59 @@ class InternxtSyncApp(App):
     @work(thread=True)
     def run_login_process(self):
         try:
-            self.call_from_thread(self.log_message, "Worker: Launching login process...")
-            
+            self.call_from_thread(
+                self.log_message, "Worker: Launching login process..."
+            )
+
             def ui_logger(msg):
                 self.call_from_thread(self.log_message, f"CLI: {msg}")
-            
+
             # Get URL from login process (doesn't open browser)
             url = self.client.login_get_url(log_callback=ui_logger)
-            
+
             if url:
                 # Open browser in MAIN THREAD for better compatibility
                 self.call_from_thread(self.open_browser_for_login, url)
             else:
-                self.call_from_thread(self.log_message, "Warning: No authentication URL found")
-            
+                self.call_from_thread(
+                    self.log_message, "Warning: No authentication URL found"
+                )
+
             # Wait a bit for login process
             time.sleep(2)
             if self.client.check_login():
                 self.call_from_thread(self.notify, "Login successful.")
                 self.start_webdav_and_load()
             else:
-                self.call_from_thread(self.notify, "Login check failed. Please check browser/terminal.", severity="warning")
-                self.start_webdav_and_load() # Try anyway
+                self.call_from_thread(
+                    self.notify,
+                    "Login check failed. Please check browser/terminal.",
+                    severity="warning",
+                )
+                self.start_webdav_and_load()  # Try anyway
         except Exception as e:
             self.call_from_thread(self.log_message, f"Login Worker FATAL Error: {e}")
             import traceback
-            self.call_from_thread(self.log_message, f"Traceback: {traceback.format_exc()}")
+
+            self.call_from_thread(
+                self.log_message, f"Traceback: {traceback.format_exc()}"
+            )
 
     def open_browser_for_login(self, url):
         """Opens browser in main thread context for better compatibility"""
         import subprocess
+
         try:
             # Try xdg-open first (better Linux compatibility, especially Wayland)
-            subprocess.Popen(['xdg-open', url], 
-                           stdout=subprocess.DEVNULL, 
-                           stderr=subprocess.DEVNULL)
+            subprocess.Popen(
+                ["xdg-open", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
             self.log_message(f"Opened browser with xdg-open: {url}")
         except Exception as e:
             # Fallback to webbrowser module
             try:
                 import webbrowser
+
                 webbrowser.open(url)
                 self.log_message(f"Opened browser with webbrowser: {url}")
             except Exception as e2:
@@ -340,8 +377,14 @@ class InternxtSyncApp(App):
             except Exception as e:
                 error_msg = str(e).lower()
                 # UPDATED: Catch "unauthorized" as well
-                if "missing credentials" in error_msg or "please login" in error_msg or "unauthorized" in error_msg:
-                    self.log_message("Credentials missing or unauthorized. Triggering login...")
+                if (
+                    "missing credentials" in error_msg
+                    or "please login" in error_msg
+                    or "unauthorized" in error_msg
+                ):
+                    self.log_message(
+                        "Credentials missing or unauthorized. Triggering login..."
+                    )
                     self.call_from_thread(self.trigger_login_from_error)
                 else:
                     self.log_message(f"Remote List Error: {e}")
@@ -349,14 +392,14 @@ class InternxtSyncApp(App):
             return
 
         self.log_message("Checking WebDAV connectivity...")
-        
+
         # Check if already running
         if self.client.is_webdav_active():
-             self.log_message("WebDAV already active.")
+            self.log_message("WebDAV already active.")
         else:
-             self.log_message("Starting WebDAV server...")
-             self.client.start_webdav()
-        
+            self.log_message("Starting WebDAV server...")
+            self.client.start_webdav()
+
         # Wait for WebDAV to be ready
         self.log_message("Waiting for WebDAV response...")
         max_retries = 30
@@ -374,13 +417,14 @@ class InternxtSyncApp(App):
 
     def trigger_login_from_error(self):
         """Triggered when credentials are missing during operation"""
+
         def on_login_decision(should_login):
             if should_login:
                 self.log_message("User confirmed login. Starting process...")
                 self.run_login_process()
             else:
                 self.log_message("Login cancelled by user.")
-        
+
         self.push_screen(LoginScreen(), on_login_decision)
 
     def on_unmount(self):
@@ -391,10 +435,10 @@ class InternxtSyncApp(App):
     def action_toggle_pane(self):
         left = self.query_one("#left_pane_tree")
         right = self.query_one("#right_pane_tree")
-        
+
         target = right if left.has_focus else left
         target.focus()
-        
+
         # Auto-select first item ("..") if nothing is selected
         if target.cursor_line == -1 and target.root.children:
             target.cursor_line = 0
@@ -404,12 +448,12 @@ class InternxtSyncApp(App):
     def action_focus_path(self):
         left_pane = self.query_one("#left_pane")
         right_pane = self.query_one("#right_pane")
-        
+
         if right_pane.has_focus_within:
             inp = self.query_one("#right_pane_input")
         else:
             inp = self.query_one("#left_pane_input")
-        
+
         inp.can_focus = True
         inp.focus()
 
@@ -419,13 +463,23 @@ class InternxtSyncApp(App):
             inp = self.query_one("#left_pane_input")
         else:
             inp = self.query_one("#right_pane_input")
-        
+
         inp.can_focus = True
         inp.focus()
 
     def action_refresh(self):
         self.refresh_local(self.local_path)
         self.refresh_remote(self.remote_path)
+
+        left_tree = self.query_one("#left_pane_tree")
+        right_tree = self.query_one("#right_pane_tree")
+
+        if left_tree.has_focus and left_tree.root.children:
+            left_tree.cursor_line = 0
+            left_tree.refresh()
+        if right_tree.has_focus and right_tree.root.children:
+            right_tree.cursor_line = 0
+            right_tree.refresh()
 
     def action_toggle_mode(self):
         self.client.use_cli = not self.client.use_cli
@@ -446,23 +500,25 @@ class InternxtSyncApp(App):
         tree = self.query_one("#left_pane_tree")
         progress = self.query_one("#left_pane_progress")
         stats_label = self.query_one("#left_pane_stats")
-        
+
         self.call_from_thread(stats_label.update, "Loading local...")
         self.call_from_thread(tree.clear_selection)
         self.call_from_thread(tree.clear)
         self.call_from_thread(progress.update, total=100, progress=10)
-        
+
         # Add ".."
         parent = os.path.dirname(path)
-        if parent != path: # Not root
-            self.call_from_thread(tree.root.add, "..", data={"type": "dir", "path": parent, "is_up": True})
+        if parent != path:  # Not root
+            self.call_from_thread(
+                tree.root.add, "..", data={"type": "dir", "path": parent, "is_up": True}
+            )
 
         try:
             entries = list(os.scandir(path))
             dirs = []
             files = []
             total_size = 0
-            
+
             self.call_from_thread(progress.update, progress=50)
             for entry in entries:
                 if entry.is_dir():
@@ -470,28 +526,44 @@ class InternxtSyncApp(App):
                 else:
                     files.append(entry)
                     total_size += entry.stat().st_size
-            
+
             dirs.sort(key=lambda e: e.name.lower())
             files.sort(key=lambda e: e.name.lower())
 
             for d in dirs:
-                self.call_from_thread(tree.root.add, f"📁 {d.name}", data={"type": "dir", "path": d.path, "is_up": False}, allow_expand=False)
+                self.call_from_thread(
+                    tree.root.add,
+                    f"📁 {d.name}",
+                    data={"type": "dir", "path": d.path, "is_up": False},
+                    allow_expand=False,
+                )
             for f in files:
-                self.call_from_thread(tree.root.add, f"📄 {f.name} ({self._format_size(f.stat().st_size)})", data={"type": "file", "path": f.path}, allow_expand=False)
-                
+                self.call_from_thread(
+                    tree.root.add,
+                    f"📄 {f.name} ({self._format_size(f.stat().st_size)})",
+                    data={"type": "file", "path": f.path},
+                    allow_expand=False,
+                )
+
             self.call_from_thread(tree.root.expand)
-            self.call_from_thread(stats_label.update, f"Files: {len(files)} | Size: {self._format_size(total_size)}")
+            self.call_from_thread(
+                stats_label.update,
+                f"Files: {len(files)} | Size: {self._format_size(total_size)}",
+            )
             self.call_from_thread(progress.update, progress=100)
 
-            # Imposta focus automatico sulla prima voce se il tree ha focus
+            # Auto-focus first item if tree has focus and items exist
             def set_cursor_first():
                 if tree.has_focus and tree.root.children:
                     tree.cursor_line = 0
+                    tree.refresh()
+
             self.call_from_thread(set_cursor_first)
 
             # Reset progress bar after a short delay
             def reset_progress():
                 progress.update(progress=0)
+
             self.call_from_thread(self.set_timer, 1.0, reset_progress)
         except Exception as e:
             self.log_message(f"Local Error: {e}")
@@ -505,20 +577,21 @@ class InternxtSyncApp(App):
         self.call_from_thread(self.update_remote_input, path)
         progress = self.query_one("#right_pane_progress")
         stats_label = self.query_one("#right_pane_stats")
-        
+
         # Disable interaction if possible? Textual doesn't have easy 'disabled' for Trees
         # We can just show loading.
-        
+
         self.call_from_thread(stats_label.update, "Loading remote...")
         self.call_from_thread(progress.update, total=100, progress=10)
-        
+
         try:
             items = self.client.list_remote(path)
             self.call_from_thread(progress.update, progress=100)
             self.call_from_thread(self.populate_remote_tree, path, items)
-            
+
             def reset_progress():
                 progress.update(progress=0)
+
             self.call_from_thread(self.set_timer, 1.0, reset_progress)
         except Exception as e:
             self.log_message(f"Remote List Error: {e}")
@@ -534,39 +607,50 @@ class InternxtSyncApp(App):
         stats_label = self.query_one("#right_pane_stats")
         tree.clear_selection()
         tree.clear()
-        
+
         # Add ".."
         if path != "/" and path != "":
             parent = os.path.dirname(path.rstrip("/"))
-            if not parent.startswith("/"): parent = "/" + parent
-            if parent == "" or parent == "/": parent = "/"
+            if not parent.startswith("/"):
+                parent = "/" + parent
+            if parent == "" or parent == "/":
+                parent = "/"
             tree.root.add("..", data={"type": "dir", "path": parent, "is_up": True})
 
         total_size = 0
         file_count = 0
         if items:
-            items.sort(key=lambda x: (not x['is_dir'], x['name'].lower()))
+            items.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
             for item in items:
-                name = item['name']
-                if item['is_dir']:
-                    tree.root.add(f"📁 {name}", data={"type": "dir", "path": item['path'], "is_up": False}, allow_expand=False)
+                name = item["name"]
+                if item["is_dir"]:
+                    tree.root.add(
+                        f"📁 {name}",
+                        data={"type": "dir", "path": item["path"], "is_up": False},
+                        allow_expand=False,
+                    )
                 else:
                     file_count += 1
                     # Ensure size is int
                     try:
-                        size = int(item.get('size', 0))
+                        size = int(item.get("size", 0))
                     except (ValueError, TypeError):
                         size = 0
                     total_size += size
-                    tree.root.add(f"📄 {name} ({self._format_size(size)})", data={"type": "file", "path": item['path']}, allow_expand=False)
-        
+                    tree.root.add(
+                        f"📄 {name} ({self._format_size(size)})",
+                        data={"type": "file", "path": item["path"]},
+                        allow_expand=False,
+                    )
+
         tree.root.expand()
-        stats_label.update(f"Files: {file_count} | Size: {self._format_size(total_size)}")
-        
-        # Auto-focus first item if present (usually "..")
-        # Textual Tree doesn't auto-select first node, let's do it manually if focused
-        if tree.has_focus:
+        stats_label.update(
+            f"Files: {file_count} | Size: {self._format_size(total_size)}"
+        )
+
+        if tree.has_focus and tree.root.children:
             tree.cursor_line = 0
+            tree.refresh()
 
     # --- Interaction ---
 
@@ -578,7 +662,8 @@ class InternxtSyncApp(App):
 
         node = event.node
         data = node.data
-        if not data: return
+        if not data:
+            return
 
         tree = event.control
         if data.get("type") == "dir":
@@ -595,13 +680,15 @@ class InternxtSyncApp(App):
         if self.query_one("#left_pane_tree").has_focus:
             self.run_calc_local_size(self.local_path)
         else:
-            self.notify("Remote size calculation not implemented yet.", severity="warning")
+            self.notify(
+                "Remote size calculation not implemented yet.", severity="warning"
+            )
 
     @work(thread=True)
     def run_calc_local_size(self, path):
         progress = self.query_one("#left_pane_progress")
-        self.call_from_thread(progress.update, total=None) # Indeterminate
-        
+        self.call_from_thread(progress.update, total=None)  # Indeterminate
+
         total_size = 0
         file_count = 0
         try:
@@ -610,15 +697,17 @@ class InternxtSyncApp(App):
                     fp = os.path.join(root, f)
                     total_size += os.path.getsize(fp)
                     file_count += 1
-            
-            self.call_from_thread(self.notify, f"Folder Size: {self._format_size(total_size)} ({file_count} files)")
+
+            self.call_from_thread(
+                self.notify,
+                f"Folder Size: {self._format_size(total_size)} ({file_count} files)",
+            )
         except Exception as e:
             self.log_message(f"Size Calc Error: {e}")
         finally:
             self.call_from_thread(progress.update, total=100, progress=100)
 
     def action_download(self):
-        """Download selected item from remote panel"""
         right_tree = self.query_one("#right_pane_tree")
         right_pane = self.query_one("#right_pane")
 
@@ -627,67 +716,263 @@ class InternxtSyncApp(App):
             self.notify("Switch to remote panel first (Tab)", severity="warning")
             return
 
-        # Get selected node
-        if right_tree.cursor_line == -1 or not right_tree.root.children:
+        selected_items = right_tree.get_selected_items()
+
+        if not selected_items:
             self.notify("No item selected", severity="warning")
             return
 
-        selected_node = right_tree.root.children[right_tree.cursor_line]
-        data = selected_node.data
-        
-        if not data:
-            self.notify("Cannot download this item", severity="warning")
-            return
-        
-        # Don't allow downloading ".." (parent directory)
-        if data.get("is_up"):
+        valid_items = [item for item in selected_items if not item.get("is_up")]
+        if not valid_items:
             self.notify("Cannot download parent directory", severity="warning")
             return
-        
-        remote_path = data["path"]
-        
-        # Only download files for now (folders would need recursive download)
-        if data["type"] == "dir":
-            self.notify("Folder download not yet implemented. Use sync instead.", severity="warning")
-            return
-        
-        self.action_download_item(remote_path)
+
+        files_to_download = [item for item in valid_items if item["type"] == "file"]
+        folders_to_download = [item for item in valid_items if item["type"] == "dir"]
+
+        total_items = len(files_to_download) + len(folders_to_download)
+        item_names = [os.path.basename(item["path"]) for item in valid_items[:10]]
+        display_names = "\n".join(item_names)
+        if total_items > 10:
+            display_names += f"\n... and {total_items - 10} more"
+
+        item_type = "items" if total_items > 1 else valid_items[0]["type"]
+
+        def on_confirm(confirmed):
+            if confirmed:
+                self.run_download_multiple(files_to_download, folders_to_download)
+                right_tree.clear_selection()
+
+        msg = f"Download {total_items} {item_type} to local?\n{display_names}"
+        self.push_screen(ConfirmScreen(msg), on_confirm)
 
     def action_download_item(self, remote_path):
         filename = os.path.basename(remote_path)
         local_target = os.path.join(self.local_path, filename)
-        
+
         def do_download(confirm):
             if confirm:
                 self.log_message(f"Downloading {remote_path} to {local_target}...")
                 self.run_download(remote_path, local_target)
-        
+
         self.push_screen(ConfirmScreen(f"Download {filename} here?"), do_download)
 
     @work(thread=True)
     def run_download(self, remote, local):
         progress = self.query_one("#right_pane_progress")
-        self.call_from_thread(progress.update, total=None) # Indeterminate
+        left_progress = self.query_one("#left_pane_progress")
+
+        filename = os.path.basename(remote)
+        # Usa un totale fisso per evitare stati inconsistenti
+        self.call_from_thread(progress.update, total=100, progress=0)
+        self.call_from_thread(left_progress.update, total=100, progress=0)
+
         try:
             self.client.download_file(remote, local)
-            self.log_message("Download complete.")
+            self.log_message(f"Download complete: {filename}")
             self.call_from_thread(self.refresh_local, self.local_path)
         except Exception as e:
             self.log_message(f"Download error: {e}")
         finally:
             self.call_from_thread(progress.update, total=100, progress=100)
+            self.call_from_thread(left_progress.update, total=100, progress=100)
+
             def reset():
                 progress.update(progress=0)
+                left_progress.update(progress=0)
+
             self.call_from_thread(self.set_timer, 1.0, reset)
+
+    def run_download_folder_sync(
+        self,
+        remote_folder,
+        local_folder,
+        progress,
+        left_progress,
+        base_completed,
+        total_items,
+    ):
+        try:
+            os.makedirs(local_folder, exist_ok=True)
+            items = self.client.list_remote(remote_folder)
+
+            if not items:
+                self.log_message(f"Folder is empty or cannot access: {remote_folder}")
+                return
+
+            for item in items:
+                item_name = item["name"]
+                remote_path = item["path"]
+                local_path = os.path.join(local_folder, item_name)
+
+                if item["is_dir"]:
+                    self.run_download_folder_sync(
+                        remote_path,
+                        local_path,
+                        progress,
+                        left_progress,
+                        base_completed,
+                        total_items,
+                    )
+                else:
+                    try:
+                        self.client.download_file(remote_path, local_path)
+                        self.log_message(f"Downloaded: {item_name}")
+                    except Exception as e:
+                        self.log_message(f"Error downloading {item_name}: {e}")
+
+            self.log_message(
+                f"Folder download complete: {os.path.basename(remote_folder)}"
+            )
+
+        except Exception as e:
+            self.log_message(f"Folder download error: {e}")
+
+    @work(thread=True)
+    def run_download_folder(self, remote_folder, local_folder):
+        progress = self.query_one("#right_pane_progress")
+        left_progress = self.query_one("#left_pane_progress")
+
+        try:
+            os.makedirs(local_folder, exist_ok=True)
+            items = self.client.list_remote(remote_folder)
+
+            if not items:
+                self.log_message(f"Folder is empty or cannot access: {remote_folder}")
+                return
+
+            total_items = len(items)
+            self.call_from_thread(progress.update, total=total_items, progress=0)
+            self.call_from_thread(left_progress.update, total=total_items, progress=0)
+
+            completed = 0
+            for item in items:
+                item_name = item["name"]
+                remote_path = item["path"]
+                local_path = os.path.join(local_folder, item_name)
+
+                if item["is_dir"]:
+                    self.run_download_folder(remote_path, local_path)
+                else:
+                    try:
+                        self.client.download_file(remote_path, local_path)
+                        self.log_message(f"Downloaded: {item_name}")
+                    except Exception as e:
+                        self.log_message(f"Error downloading {item_name}: {e}")
+
+                completed += 1
+                self.call_from_thread(progress.update, progress=completed)
+                self.call_from_thread(left_progress.update, progress=completed)
+
+            self.log_message(
+                f"Folder download complete: {os.path.basename(remote_folder)}"
+            )
+            self.call_from_thread(self.refresh_local, self.local_path)
+
+        except Exception as e:
+            self.log_message(f"Folder download error: {e}")
+        finally:
+            self.call_from_thread(progress.update, total=100, progress=100)
+            self.call_from_thread(left_progress.update, total=100, progress=100)
+
+            def reset():
+                progress.update(progress=0)
+                left_progress.update(progress=0)
+
+            self.call_from_thread(self.set_timer, 1.0, reset)
+
+    @work(thread=True)
+    def run_download_multiple(self, files_to_download, folders_to_download):
+        right_progress = self.query_one("#right_pane_progress")
+        left_progress = self.query_one("#left_pane_progress")
+
+        total_files = len(files_to_download)
+        total_folders = len(folders_to_download)
+        total_items = total_files + total_folders
+
+        if total_items == 0:
+            return
+
+        self.call_from_thread(right_progress.update, total=total_items, progress=0)
+        self.call_from_thread(left_progress.update, total=total_items, progress=0)
+
+        completed = 0
+
+        for item in files_to_download:
+            remote_path = item["path"]
+            filename = os.path.basename(remote_path)
+            local_target = os.path.join(self.local_path, filename)
+
+            self.log_message(f"Downloading: {filename}")
+            self.call_from_thread(right_progress.update, progress=completed)
+            self.call_from_thread(left_progress.update, progress=completed)
+
+            try:
+                # Mantieni total costante e avanza solo progress
+                self.client.download_file(remote_path, local_target)
+                self.log_message(f"Downloaded: {filename}")
+            except Exception as e:
+                self.log_message(f"Error downloading {filename}: {e}")
+            finally:
+                self.call_from_thread(right_progress.update, total=total_items)
+                self.call_from_thread(left_progress.update, total=total_items)
+
+            completed += 1
+            self.call_from_thread(right_progress.update, progress=completed)
+            self.call_from_thread(left_progress.update, progress=completed)
+
+        for item in folders_to_download:
+            remote_path = item["path"]
+            folder_name = os.path.basename(remote_path)
+            local_target = os.path.join(self.local_path, folder_name)
+
+            self.log_message(f"Downloading folder: {folder_name}")
+            self.call_from_thread(right_progress.update, progress=completed)
+            self.call_from_thread(left_progress.update, progress=completed)
+
+            try:
+                self.run_download_folder_sync(
+                    remote_path,
+                    local_target,
+                    right_progress,
+                    left_progress,
+                    completed,
+                    total_items,
+                )
+            except Exception as e:
+                self.log_message(f"Error downloading folder {folder_name}: {e}")
+
+            completed += 1
+            self.call_from_thread(right_progress.update, progress=completed)
+            self.call_from_thread(left_progress.update, progress=completed)
+
+        self.log_message("All downloads complete")
+        self.call_from_thread(self.refresh_local, self.local_path)
+
+        self.call_from_thread(right_progress.update, total=100, progress=100)
+        self.call_from_thread(left_progress.update, total=100, progress=100)
+
+        def reset():
+            right_progress.update(progress=0)
+            left_progress.update(progress=0)
+
+        self.call_from_thread(self.set_timer, 1.0, reset)
 
     def action_sync(self):
         def start_sync_process(result):
             confirm, exclude_hidden, zip_mode = result
             if confirm:
-                self.log_message(f"Syncing {self.local_path} -> {self.remote_path} (Hidden: {exclude_hidden}, Zip: {zip_mode})")
-                self.run_sync_analysis(self.local_path, self.remote_path, exclude_hidden, zip_mode)
+                self.log_message(
+                    f"Syncing {self.local_path} -> {self.remote_path} (Hidden: {exclude_hidden}, Zip: {zip_mode})"
+                )
+                self.run_sync_analysis(
+                    self.local_path, self.remote_path, exclude_hidden, zip_mode
+                )
 
-        self.push_screen(SyncOptionsScreen(f"Sync local content to remote folder?"), start_sync_process)
+        self.push_screen(
+            SyncOptionsScreen(f"Sync local content to remote folder?"),
+            start_sync_process,
+        )
 
     def action_sync_file(self):
         """Sync selected file(s) or folder(s) from local panel to remote"""
@@ -714,26 +999,32 @@ class InternxtSyncApp(App):
         folders_to_sync = [item for item in valid_items if item["type"] == "dir"]
 
         total_items = len(files_to_upload) + len(folders_to_sync)
-        item_names = [os.path.basename(item["path"]) for item in valid_items[:3]]
-        display_names = ", ".join(item_names)
-        if total_items > 3:
-            display_names += f" and {total_items - 3} more"
+        item_names = [os.path.basename(item["path"]) for item in valid_items[:10]]
+        display_names = "\n".join(item_names)
+        if total_items > 10:
+            display_names += f"\n... and {total_items - 10} more"
 
         def on_confirm(confirmed):
             if confirmed:
                 for item in files_to_upload:
                     local_path = item["path"]
                     item_name = os.path.basename(local_path)
-                    remote_dest = os.path.join(self.remote_path, item_name).replace("\\", "/")
+                    remote_dest = os.path.join(self.remote_path, item_name).replace(
+                        "\\", "/"
+                    )
                     self.log_message(f"Uploading file: {item_name}")
                     self.run_upload_single_file(local_path, remote_dest, item_name)
 
                 for item in folders_to_sync:
                     local_path = item["path"]
                     item_name = os.path.basename(local_path)
-                    remote_dest = os.path.join(self.remote_path, item_name).replace("\\", "/")
+                    remote_dest = os.path.join(self.remote_path, item_name).replace(
+                        "\\", "/"
+                    )
                     self.log_message(f"Syncing folder: {item_name}")
-                    self.run_sync_analysis(local_path, remote_dest, exclude_hidden=True, zip_mode=False)
+                    self.run_sync_analysis(
+                        local_path, remote_dest, exclude_hidden=True, zip_mode=False
+                    )
 
             left_tree.clear_selection()
 
@@ -743,53 +1034,60 @@ class InternxtSyncApp(App):
 
     @work(thread=True)
     def run_upload_single_file(self, local_path, remote_path, filename):
-        """Upload a single file to remote"""
         progress = self.query_one("#left_pane_progress")
-        self.call_from_thread(progress.update, total=None)  # Indeterminate
-        
+        right_progress = self.query_one("#right_pane_progress")
+
+        self.call_from_thread(progress.update, total=None)
+        self.call_from_thread(right_progress.update, total=None)
+
         try:
-            # Check if file already exists on remote
             parent_remote = os.path.dirname(remote_path)
             try:
                 items = self.client.list_remote(parent_remote)
-                file_exists = any(item['name'] == filename and not item['is_dir'] for item in items)
-                
+                file_exists = any(
+                    item["name"] == filename and not item["is_dir"] for item in items
+                )
+
                 if file_exists:
                     self.log_message(f"File exists, deleting old version: {filename}")
                     try:
                         self.client.delete_item(remote_path)
-                        time.sleep(0.5)  # Wait for deletion to complete
+                        time.sleep(0.5)
                     except Exception as e:
-                        self.log_message(f"Warning: Could not delete existing file: {e}")
+                        self.log_message(
+                            f"Warning: Could not delete existing file: {e}"
+                        )
             except Exception as e:
                 self.log_message(f"Could not check if file exists: {e}")
-            
-            # Upload the file
+
             self.client.upload_file(local_path, remote_path)
             self.log_message(f"Upload complete: {filename}")
             self.call_from_thread(self.notify, f"Uploaded: {filename}")
-            
-            # Refresh remote panel
+
             self.call_from_thread(self.refresh_remote, self.remote_path)
         except Exception as e:
             self.log_message(f"Upload error: {e}")
             self.call_from_thread(self.notify, f"Upload failed: {e}", severity="error")
         finally:
             self.call_from_thread(progress.update, total=100, progress=100)
+            self.call_from_thread(right_progress.update, total=100, progress=100)
+
             def reset():
                 progress.update(progress=0)
+                right_progress.update(progress=0)
+
             self.call_from_thread(self.set_timer, 1.0, reset)
 
     @work(thread=True)
     def run_sync_analysis(self, local_root, remote_root, exclude_hidden, zip_mode):
         # Disable panels and show progress during analysis
         self.call_from_thread(self.disable_panels)
-        self.call_from_thread(self.show_sync_loader, total=None) # Indeterminate
-        
+        self.call_from_thread(self.show_sync_loader, total=None)  # Indeterminate
+
         progress = self.query_one("#right_pane_progress")
         stats_label = self.query_one("#right_pane_stats")
         self.call_from_thread(stats_label.update, "Analyzing...")
-        self.call_from_thread(progress.update, total=None) # Indeterminate initially
+        self.call_from_thread(progress.update, total=None)  # Indeterminate initially
 
         if zip_mode:
             self.log_message("Zipping content...")
@@ -797,33 +1095,50 @@ class InternxtSyncApp(App):
                 # Create temp zip
                 parent_dir = os.path.dirname(local_root)
                 base_name = os.path.basename(local_root)
-                
+
                 # shutil.make_archive creates base_name.zip
                 # We want it in a temp dir
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    zip_path = shutil.make_archive(os.path.join(temp_dir, base_name), 'zip', local_root)
-                    
+                    zip_path = shutil.make_archive(
+                        os.path.join(temp_dir, base_name), "zip", local_root
+                    )
+
                     self.log_message(f"Uploading {os.path.basename(zip_path)}...")
+                    self.call_from_thread(
+                        stats_label.update, f"Uploading {os.path.basename(zip_path)}..."
+                    )
                     # Upload single file
                     # Destination: remote_root + zip_name
-                    dest_path = os.path.join(remote_root, os.path.basename(zip_path)).replace("\\", "/")
-                    
+                    dest_path = os.path.join(
+                        remote_root, os.path.basename(zip_path)
+                    ).replace("\\", "/")
+
                     try:
                         self.client.upload_file(zip_path, dest_path)
                         self.log_message("Zip upload complete.")
                     except Exception as e:
                         self.log_message(f"Zip upload failed: {e}")
+                        self.call_from_thread(
+                            self.notify, f"Upload failed: {e}", severity="error"
+                        )
             except Exception as e:
                 self.log_message(f"Zipping failed: {e}")
-            
-            self.call_from_thread(progress.update, total=100, progress=100)
-            self.call_from_thread(self.refresh_remote, remote_root)
+                self.call_from_thread(
+                    self.notify, f"Zipping failed: {e}", severity="error"
+                )
+            finally:
+                self.call_from_thread(progress.update, total=100, progress=100)
+                self.call_from_thread(self.refresh_remote, remote_root)
+                self.call_from_thread(self.hide_sync_loader)
+                self.call_from_thread(self.enable_panels)
             return
 
         # Normal Sync
         self.log_message("Scanning local files...")
-        local_items = self.sync_engine.scan_local(local_root, exclude_hidden=exclude_hidden)
-        
+        local_items = self.sync_engine.scan_local(
+            local_root, exclude_hidden=exclude_hidden
+        )
+
         self.log_message("Scanning remote files...")
         try:
             remote_items = self.sync_engine.scan_remote(remote_root)
@@ -834,19 +1149,35 @@ class InternxtSyncApp(App):
             self.call_from_thread(self.enable_panels)
             self.call_from_thread(self.hide_sync_loader)
             return
-        
-        to_upload, to_create, to_delete = self.sync_engine.compare(local_items, remote_items)
-        
+
+        to_upload, to_create, to_delete = self.sync_engine.compare(
+            local_items, remote_items
+        )
+
         total_ops = len(to_upload) + len(to_create) + len(to_delete)
-        self.log_message(f"Analysis: {len(to_upload)} uploads, {len(to_create)} dirs, {len(to_delete)} deletions.")
+        self.log_message(
+            f"Analysis: {len(to_upload)} uploads, {len(to_create)} dirs, {len(to_delete)} deletions."
+        )
 
         if to_delete:
             # We need to pass total_ops to run_sync_execution for progress bar
-            self.call_from_thread(self.prompt_deletions, to_delete, to_upload, to_create, local_root, remote_root, total_ops)
+            self.call_from_thread(
+                self.prompt_deletions,
+                to_delete,
+                to_upload,
+                to_create,
+                local_root,
+                remote_root,
+                total_ops,
+            )
         else:
-            self.run_sync_execution(to_upload, to_create, [], local_root, remote_root, total_ops)
+            self.run_sync_execution(
+                to_upload, to_create, [], local_root, remote_root, total_ops
+            )
 
-    def prompt_deletions(self, to_delete, to_upload, to_create, local_root, remote_root, total_ops):
+    def prompt_deletions(
+        self, to_delete, to_upload, to_create, local_root, remote_root, total_ops
+    ):
         def on_confirm(selected_deletions):
             if selected_deletions is None:
                 self.log_message("Sync cancelled.")
@@ -859,7 +1190,14 @@ class InternxtSyncApp(App):
                 return
             # Re-calculate total ops based on selected deletions
             new_total = len(to_upload) + len(to_create) + len(selected_deletions)
-            self.run_sync_execution(to_upload, to_create, selected_deletions, local_root, remote_root, new_total)
+            self.run_sync_execution(
+                to_upload,
+                to_create,
+                selected_deletions,
+                local_root,
+                remote_root,
+                new_total,
+            )
 
         self.push_screen(DeletionConfirmScreen(to_delete), on_confirm)
 
@@ -883,14 +1221,21 @@ class InternxtSyncApp(App):
         right_pane.disabled = False
 
     @work(thread=True)
-    def run_sync_execution(self, to_upload, to_create, to_delete, local_root, remote_root, total_ops):
+    def run_sync_execution(
+        self, to_upload, to_create, to_delete, local_root, remote_root, total_ops
+    ):
         # Show sync loader with progress bar
         self.call_from_thread(self.show_sync_loader, total_ops)
-        
+
+        left_progress = self.query_one("#left_pane_progress", ProgressBar)
+        right_progress = self.query_one("#right_pane_progress", ProgressBar)
+        self.call_from_thread(left_progress.update, total=total_ops, progress=0)
+        self.call_from_thread(right_progress.update, total=total_ops, progress=0)
+
         completed_ops = 0
 
         for rel_path in to_create:
-            remote_path = os.path.join(remote_root, rel_path).replace("\\", "/") 
+            remote_path = os.path.join(remote_root, rel_path).replace("\\", "/")
             self.log_message(f"Creating dir: {rel_path}")
             status_text = f"Creating: {rel_path[:40]}..."
             self.call_from_thread(self.update_sync_progress, completed_ops, status_text)
@@ -900,16 +1245,20 @@ class InternxtSyncApp(App):
                 self.log_message(f"Error creating dir {rel_path}: {e}")
             completed_ops += 1
             self.call_from_thread(self.update_sync_progress, completed_ops)
+            self.call_from_thread(left_progress.update, progress=completed_ops)
+            self.call_from_thread(right_progress.update, progress=completed_ops)
 
         for upload_item in to_upload:
             abs_path, rel_path, needs_delete = upload_item
             remote_path = os.path.join(remote_root, rel_path).replace("\\", "/")
-            
+
             # If file exists and needs update, delete it first
             if needs_delete:
                 self.log_message(f"Deleting existing: {rel_path}")
                 status_text = f"Deleting: {rel_path[:40]}..."
-                self.call_from_thread(self.update_sync_progress, completed_ops, status_text)
+                self.call_from_thread(
+                    self.update_sync_progress, completed_ops, status_text
+                )
                 try:
                     self.client.delete_item(remote_path)
                     self.log_message(f"Successfully deleted: {rel_path}")
@@ -917,17 +1266,23 @@ class InternxtSyncApp(App):
                     self.log_message(f"Warning: Could not delete {rel_path}: {e}")
                 # Add a small delay to ensure deletion is processed
                 time.sleep(0.5)
-            
+
             self.log_message(f"Uploading: {rel_path}")
             status_text = f"Uploading: {rel_path[:40]}..."
             self.call_from_thread(self.update_sync_progress, completed_ops, status_text)
             try:
                 self.client.upload_file(abs_path, remote_path)
                 self.log_message(f"Successfully uploaded: {rel_path}")
+                completed_ops += 1
+                self.call_from_thread(self.update_sync_progress, completed_ops)
+                self.call_from_thread(left_progress.update, progress=completed_ops)
+                self.call_from_thread(right_progress.update, progress=completed_ops)
             except Exception as e:
                 self.log_message(f"Error uploading {rel_path}: {e}")
-            completed_ops += 1
-            self.call_from_thread(self.update_sync_progress, completed_ops)
+                completed_ops += 1
+                self.call_from_thread(self.update_sync_progress, completed_ops)
+                self.call_from_thread(left_progress.update, progress=completed_ops)
+                self.call_from_thread(right_progress.update, progress=completed_ops)
 
         for rel_path in to_delete:
             remote_path = os.path.join(remote_root, rel_path).replace("\\", "/")
@@ -940,24 +1295,34 @@ class InternxtSyncApp(App):
                 self.log_message(f"Error deleting {rel_path}: {e}")
             completed_ops += 1
             self.call_from_thread(self.update_sync_progress, completed_ops)
+            self.call_from_thread(left_progress.update, progress=completed_ops)
+            self.call_from_thread(right_progress.update, progress=completed_ops)
 
         self.log_message("Sync complete.")
-        self.call_from_thread(self.update_sync_progress, completed_ops, "Sync complete!")
-        
+        self.call_from_thread(
+            self.update_sync_progress, completed_ops, "Sync complete!"
+        )
+
+        self.call_from_thread(left_progress.update, progress=completed_ops)
+        self.call_from_thread(right_progress.update, progress=completed_ops)
+
         # Hide sync loader after a short delay
         time.sleep(1)
         self.call_from_thread(self.hide_sync_loader)
-        
+
+        self.call_from_thread(left_progress.update, progress=0)
+        self.call_from_thread(right_progress.update, progress=0)
+
         # Re-enable panels
         self.call_from_thread(self.enable_panels)
-        
+
         self.call_from_thread(self.refresh_remote, remote_root)
 
     def action_delete_item(self):
         """Delete selected file or folder from current panel"""
         left_tree = self.query_one("#left_pane_tree")
         right_tree = self.query_one("#right_pane_tree")
-        
+
         # Determine which tree has focus
         if left_tree.has_focus:
             tree = left_tree
@@ -968,40 +1333,169 @@ class InternxtSyncApp(App):
         else:
             self.notify("No panel selected", severity="warning")
             return
-        
-        # Get selected node
-        if tree.cursor_line == -1 or not tree.root.children:
+
+        # Get selected items (handles both single and multi-selection)
+        selected_items = tree.get_selected_items()
+
+        if not selected_items:
             self.notify("No item selected", severity="warning")
             return
-        
-        selected_node = tree.root.children[tree.cursor_line]
-        data = selected_node.data
-        
-        if not data:
-            self.notify("Cannot delete this item", severity="warning")
-            return
-        
-        # Don't allow deleting ".." (parent directory)
-        if data.get("is_up"):
+
+        valid_items = [item for item in selected_items if not item.get("is_up")]
+        if not valid_items:
             self.notify("Cannot delete parent directory", severity="warning")
             return
-        
-        item_path = data["path"]
-        item_name = os.path.basename(item_path)
-        item_type = "folder" if data["type"] == "dir" else "file"
-        
+
+        total_items = len(valid_items)
+        item_names = [os.path.basename(item["path"]) for item in valid_items[:10]]
+        display_names = "\n".join(item_names)
+        if total_items > 10:
+            display_names += f"\n... and {total_items - 10} more"
+
+        item_type = (
+            "items"
+            if total_items > 1
+            else ("folder" if valid_items[0]["type"] == "dir" else "file")
+        )
+
         def on_confirm(confirmed):
             if confirmed:
+                self.run_delete_multiple(valid_items, is_remote)
+                tree.clear_selection()
+
+        msg = f"Delete {total_items} {item_type} from {'Remote' if is_remote else 'Local'}?\n{display_names}"
+        self.push_screen(ConfirmScreen(msg), on_confirm)
+
+    def action_create_folder(self):
+        left_tree = self.query_one("#left_pane_tree")
+        right_tree = self.query_one("#right_pane_tree")
+
+        if left_tree.has_focus:
+            current_path = self.local_path
+            location = "Local"
+            is_remote = False
+        elif right_tree.has_focus:
+            current_path = self.remote_path
+            location = "Remote"
+            is_remote = True
+        else:
+            self.notify("No panel selected", severity="warning")
+            return
+
+        def on_folder_name(folder_name):
+            if folder_name:
                 if is_remote:
-                    self.run_delete_remote(item_path, item_name)
+                    self.create_remote_folder(current_path, folder_name)
                 else:
-                    self.run_delete_local(item_path, item_name)
-        
-        self.push_screen(ConfirmScreen(f"Delete {item_type}: {item_name}?"), on_confirm)
+                    self.create_local_folder(current_path, folder_name)
+
+        self.push_screen(CreateFolderScreen(location), on_folder_name)
+
+    @work(thread=True)
+    def create_local_folder(self, parent_path, folder_name):
+        try:
+            new_folder_path = os.path.join(parent_path, folder_name)
+            os.makedirs(new_folder_path, exist_ok=True)
+            self.log_message(f"Created local folder: {folder_name}")
+            self.call_from_thread(self.refresh_local, self.local_path)
+        except Exception as e:
+            self.log_message(f"Error creating local folder: {e}")
+            self.call_from_thread(
+                self.notify, f"Failed to create folder: {e}", severity="error"
+            )
+
+    @work(thread=True)
+    def create_remote_folder(self, parent_path, folder_name):
+        try:
+            new_folder_path = os.path.join(parent_path, folder_name).replace("\\", "/")
+            self.client.create_directory(new_folder_path)
+            self.log_message(f"Created remote folder: {folder_name}")
+            self.call_from_thread(self.refresh_remote, self.remote_path)
+        except Exception as e:
+            self.log_message(f"Error creating remote folder: {e}")
+            self.call_from_thread(
+                self.notify, f"Failed to create folder: {e}", severity="error"
+            )
+
+    def action_view_trash(self):
+        self.run_trash_operations()
+
+    @work(thread=True)
+    def run_trash_operations(self):
+        try:
+            self.log_message("Loading trash contents...")
+            trash_items = self.client.list_trash()
+            self.call_from_thread(self.show_trash_screen, trash_items)
+        except Exception as e:
+            self.log_message(f"Error loading trash: {e}")
+            self.call_from_thread(
+                self.notify, f"Failed to load trash: {e}", severity="error"
+            )
+
+    def show_trash_screen(self, trash_items):
+        def on_trash_action(result):
+            if result is None:
+                return
+            action, selected_items = result
+            if selected_items:
+                self.run_trash_action(action, selected_items)
+
+        self.push_screen(TrashScreen(trash_items), on_trash_action)
+
+    @work(thread=True)
+    def run_trash_action(self, action, items):
+        for item in items:
+            item_id = item.get("id")
+            item_type = item.get("type", "file")
+            item_name = item.get("name", "Unknown")
+
+            try:
+                if action == "restore":
+                    self.client.restore_from_trash(item_id, item_type)
+                    self.log_message(f"Restored: {item_name}")
+                elif action == "delete":
+                    self.client.delete_permanently(item_id, item_type)
+                    self.log_message(f"Permanently deleted: {item_name}")
+            except Exception as e:
+                self.log_message(f"Error processing {item_name}: {e}")
+                self.call_from_thread(
+                    self.notify, f"Failed to process {item_name}: {e}", severity="error"
+                )
+
+        self.call_from_thread(self.notify, f"Trash operation completed: {action}")
+
+    @work(thread=True)
+    def run_delete_multiple(self, items, is_remote):
+        for item in items:
+            item_path = item["path"]
+            item_name = os.path.basename(item_path)
+
+            try:
+                if is_remote:
+                    self.client.delete_item(item_path)
+                    self.log_message(f"Deleted remote item: {item_name}")
+                else:
+                    if os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                        self.log_message(f"Deleted local folder: {item_name}")
+                    else:
+                        os.remove(item_path)
+                        self.log_message(f"Deleted local file: {item_name}")
+            except Exception as e:
+                self.log_message(
+                    f"Error deleting {'remote' if is_remote else 'local'} item {item_name}: {e}"
+                )
+                self.call_from_thread(
+                    self.notify, f"Delete failed: {item_name}: {e}", severity="error"
+                )
+
+        if is_remote:
+            self.call_from_thread(self.refresh_remote, self.remote_path)
+        else:
+            self.call_from_thread(self.refresh_local, self.local_path)
 
     @work(thread=True)
     def run_delete_local(self, path, name):
-        """Delete local file or folder"""
         try:
             if os.path.isdir(path):
                 shutil.rmtree(path)
@@ -1009,7 +1503,7 @@ class InternxtSyncApp(App):
             else:
                 os.remove(path)
                 self.log_message(f"Deleted local file: {name}")
-            
+
             # Refresh local panel
             self.call_from_thread(self.refresh_local, self.local_path)
         except Exception as e:
@@ -1018,22 +1512,149 @@ class InternxtSyncApp(App):
 
     @work(thread=True)
     def run_delete_remote(self, path, name):
-        """Delete remote file or folder"""
         try:
             self.client.delete_item(path)
             self.log_message(f"Deleted remote item: {name}")
-            
+
             # Refresh remote panel
             self.call_from_thread(self.refresh_remote, self.remote_path)
         except Exception as e:
             self.log_message(f"Error deleting remote item: {e}")
             self.call_from_thread(self.notify, f"Delete failed: {e}", severity="error")
 
+    def action_rename_item(self):
+        """Rename selected file or folder from current panel"""
+        left_tree = self.query_one("#left_pane_tree")
+        right_tree = self.query_one("#right_pane_tree")
+
+        # Determine which tree has focus
+        if left_tree.has_focus:
+            tree = left_tree
+            is_remote = False
+            location = "Local"
+        elif right_tree.has_focus:
+            tree = right_tree
+            is_remote = True
+            location = "Remote"
+        else:
+            self.notify("No panel selected", severity="warning")
+            return
+
+        # Get selected items (only single item for rename)
+        selected_items = tree.get_selected_items()
+
+        if not selected_items:
+            self.notify("No item selected", severity="warning")
+            return
+
+        if len(selected_items) > 1:
+            self.notify("Can only rename one item at a time", severity="warning")
+            return
+
+        item = selected_items[0]
+        
+        # Cannot rename ".." or "."
+        if item.get("is_up"):
+            self.notify("Cannot rename parent directory", severity="warning")
+            return
+
+        current_name = os.path.basename(item["path"])
+        
+        def on_rename(new_name):
+            if new_name:
+                if is_remote:
+                    self.run_rename_remote(item["path"], new_name)
+                else:
+                    self.run_rename_local(item["path"], new_name)
+                tree.clear_selection()
+
+        self.push_screen(RenameScreen(current_name, location), on_rename)
+
+    @work(thread=True)
+    def run_rename_local(self, old_path, new_name):
+        try:
+            parent_dir = os.path.dirname(old_path)
+            new_path = os.path.join(parent_dir, new_name)
+            
+            if os.path.exists(new_path):
+                self.call_from_thread(
+                    self.notify, f"Item with name '{new_name}' already exists", severity="error"
+                )
+                return
+            
+            os.rename(old_path, new_path)
+            self.log_message(f"Renamed local item to: {new_name}")
+            self.call_from_thread(self.notify, f"Renamed to: {new_name}")
+            self.call_from_thread(self.refresh_local, self.local_path)
+        except Exception as e:
+            self.log_message(f"Error renaming local item: {e}")
+            self.call_from_thread(
+                self.notify, f"Rename failed: {e}", severity="error"
+            )
+
+    @work(thread=True)
+    def run_rename_remote(self, old_path, new_name):
+        try:
+            parent_dir = os.path.dirname(old_path)
+            new_path = os.path.join(parent_dir, new_name).replace("\\", "/")
+            
+            # Check if item with new name already exists
+            try:
+                items = self.client.list_remote(parent_dir)
+                if any(item["name"] == new_name for item in items):
+                    self.call_from_thread(
+                        self.notify, f"Item with name '{new_name}' already exists", severity="error"
+                    )
+                    return
+            except Exception as e:
+                self.log_message(f"Could not check if name exists: {e}")
+            
+            # Internxt CLI doesn't have a direct rename command
+            # We need to use move command (if available) or download/upload/delete
+            # For now, we'll notify that it's not supported via CLI
+            if self.client.use_cli:
+                self.call_from_thread(
+                    self.notify, "Rename not supported in CLI mode yet", severity="warning"
+                )
+                self.log_message("Remote rename not implemented for CLI mode")
+            else:
+                # WebDAV supports MOVE method
+                try:
+                    import requests
+                    from urllib.parse import quote
+                    
+                    old_url = f"{self.client.webdav_url}{quote(old_path)}"
+                    new_url = f"{self.client.webdav_url}{quote(new_path)}"
+                    
+                    response = requests.request(
+                        "MOVE",
+                        old_url,
+                        headers={"Destination": new_url},
+                        verify=False
+                    )
+                    response.raise_for_status()
+                    
+                    self.log_message(f"Renamed remote item to: {new_name}")
+                    self.call_from_thread(self.notify, f"Renamed to: {new_name}")
+                    self.call_from_thread(self.refresh_remote, self.remote_path)
+                except Exception as e:
+                    self.log_message(f"Error renaming remote item: {e}")
+                    self.call_from_thread(
+                        self.notify, f"Rename failed: {e}", severity="error"
+                    )
+        except Exception as e:
+            self.log_message(f"Error renaming remote item: {e}")
+            self.call_from_thread(
+                self.notify, f"Rename failed: {e}", severity="error"
+            )
+
     def log_message(self, msg):
-        self.query_one("#app_log", Log).write_line(f"[{time.strftime('%H:%M:%S')}] {msg}")
+        self.query_one("#app_log", Log).write_line(
+            f"[{time.strftime('%H:%M:%S')}] {msg}"
+        )
 
     def _format_size(self, size):
-        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        for unit in ["B", "KB", "MB", "GB", "TB"]:
             if size < 1024:
                 return f"{size:.1f} {unit}"
             size /= 1024
@@ -1043,8 +1664,8 @@ class InternxtSyncApp(App):
     def on_path_submit(self, event):
         inp = event.input
         new_path = inp.value
-        inp.can_focus = False # Disable focus again after submit
-        
+        inp.can_focus = False  # Disable focus again after submit
+
         if inp.id == "left_pane_input":
             if os.path.exists(new_path) and os.path.isdir(new_path):
                 self.local_path = new_path
@@ -1056,6 +1677,7 @@ class InternxtSyncApp(App):
             self.remote_path = new_path
             self.refresh_remote(new_path)
             self.query_one("#right_pane_tree").focus()
+
 
 if __name__ == "__main__":
     app = InternxtSyncApp()

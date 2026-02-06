@@ -601,3 +601,78 @@ class InternxtClient:
         else:
             url = f"{self.webdav_url}{quote(remote_path)}"
             requests.delete(url, verify=False)
+
+    def list_trash(self):
+        if self.use_cli:
+            cmd = ["internxt", "trash", "list"]
+            base = self._find_executable()
+            if base:
+                cmd = base + ["trash", "list"]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise Exception(f"Failed to list trash: {result.stderr}")
+            
+            items = []
+            current_item = {}
+            for line in result.stdout.split('\n'):
+                line = line.strip()
+                if line.startswith("Id:"):
+                    if current_item and 'id' in current_item:
+                        items.append(current_item)
+                    current_item = {'id': line.split('Id:')[1].strip()}
+                elif line.startswith("Type:") and current_item:
+                    current_item['type'] = line.split('Type:')[1].strip()
+                elif line.startswith("Name:") and current_item:
+                    current_item['name'] = line.split('Name:')[1].strip()
+                elif line.startswith("Path:") and current_item:
+                    current_item['path'] = line.split('Path:')[1].strip()
+            
+            if current_item and 'id' in current_item:
+                items.append(current_item)
+            
+            return items
+        else:
+            raise Exception("Trash operations not supported in WebDAV mode")
+
+    def restore_from_trash(self, item_id, item_type):
+        if self.use_cli:
+            if item_type == 'folder':
+                cmd = ["internxt", "trash", "restore-folder", "-i", item_id]
+            else:
+                cmd = ["internxt", "trash", "restore-file", "-i", item_id]
+            
+            base = self._find_executable()
+            if base:
+                if item_type == 'folder':
+                    cmd = base + ["trash", "restore-folder", "-i", item_id]
+                else:
+                    cmd = base + ["trash", "restore-file", "-i", item_id]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise Exception(f"Failed to restore item: {result.stderr}")
+            return True
+        else:
+            raise Exception("Trash operations not supported in WebDAV mode")
+
+    def delete_permanently(self, item_id, item_type):
+        if self.use_cli:
+            if item_type == 'folder':
+                cmd = ["internxt", "trash", "delete-folder", "-i", item_id]
+            else:
+                cmd = ["internxt", "trash", "delete-file", "-i", item_id]
+            
+            base = self._find_executable()
+            if base:
+                if item_type == 'folder':
+                    cmd = base + ["trash", "delete-folder", "-i", item_id]
+                else:
+                    cmd = base + ["trash", "delete-file", "-i", item_id]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise Exception(f"Failed to delete item permanently: {result.stderr}")
+            return True
+        else:
+            raise Exception("Trash operations not supported in WebDAV mode")

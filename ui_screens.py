@@ -1,5 +1,5 @@
 from textual.screen import ModalScreen
-from textual.widgets import Label, Button, Checkbox, Tree
+from textual.widgets import Label, Button, Checkbox, Tree, Input
 from textual.containers import Vertical, Horizontal
 from textual import on, events
 import os
@@ -183,3 +183,142 @@ class ConfirmScreen(ModalScreen):
             self.dismiss(True)
         else:
             self.dismiss(False)
+
+class CreateFolderScreen(ModalScreen):
+    def __init__(self, location):
+        super().__init__()
+        self.location = location
+
+    def compose(self):
+        yield Vertical(
+            Label(f"Create new folder in {self.location}"),
+            Input(placeholder="Folder name", id="folder_name_input"),
+            Horizontal(
+                Button("Create", variant="success", id="create"),
+                Button("Cancel", variant="error", id="cancel"),
+                classes="button_row"
+            ),
+            classes="modal_dialog"
+        )
+
+    @on(Button.Pressed)
+    def action(self, event):
+        if event.button.id == "create":
+            folder_name = self.query_one("#folder_name_input", Input).value.strip()
+            if folder_name:
+                self.dismiss(folder_name)
+            else:
+                self.dismiss(None)
+        else:
+            self.dismiss(None)
+
+class TrashScreen(ModalScreen):
+    def __init__(self, trash_items):
+        super().__init__()
+        self.trash_items = trash_items
+
+    def compose(self):
+        yield Vertical(
+            Label("Trash Contents (Space to select, Enter to restore, Delete to permanently delete)"),
+            Tree("Trash", id="trash_tree", classes="trash_list"),
+            Horizontal(
+                Button("Restore Selected", variant="success", id="restore"),
+                Button("Delete Permanently", variant="error", id="delete_perm"),
+                Button("Close", variant="primary", id="close"),
+                classes="button_row"
+            ),
+            classes="modal_dialog_large"
+        )
+
+    def on_mount(self):
+        tree = self.query_one("#trash_tree", Tree)
+        tree.show_root = False
+        for item in self.trash_items:
+            icon = "📁" if item.get('type') == 'folder' else "📄"
+            name = item.get('name', 'Unknown')
+            node = tree.root.add(f"{icon} {name}", data=item)
+
+    def on_key(self, event: events.Key):
+        if event.key == "space":
+            tree = self.query_one("#trash_tree", Tree)
+            if tree.cursor_node and tree.cursor_node.data:
+                self.toggle_selection(tree.cursor_node)
+                event.stop()
+
+    def toggle_selection(self, node):
+        if node.data:
+            node.data['selected'] = not node.data.get('selected', False)
+            self._update_node_label(node)
+
+    def _update_node_label(self, node):
+        if node.data:
+            selected = node.data.get('selected', False)
+            item_type = node.data.get('type', 'file')
+            name = node.data.get('name', 'Unknown')
+            icon = "📁" if item_type == 'folder' else "📄"
+            prefix = "☑" if selected else "☐"
+            node.label = f"{prefix} {icon} {name}"
+
+    @on(Button.Pressed)
+    def action(self, event):
+        tree = self.query_one("#trash_tree", Tree)
+        selected_items = []
+        
+        def collect_selected(node):
+            if node.data and node.data.get('selected'):
+                selected_items.append(node.data)
+            for child in node.children:
+                collect_selected(child)
+        
+        for node in tree.root.children:
+            collect_selected(node)
+        
+        if event.button.id == "restore":
+            self.dismiss(("restore", selected_items))
+        elif event.button.id == "delete_perm":
+            self.dismiss(("delete", selected_items))
+        else:
+            self.dismiss(None)
+
+class RenameScreen(ModalScreen):
+    def __init__(self, current_name, location):
+        super().__init__()
+        self.current_name = current_name
+        self.location = location
+
+    def compose(self):
+        yield Vertical(
+            Label(f"Rename {self.location} item"),
+            Label(f"Current name: {self.current_name}"),
+            Input(placeholder="New name", value=self.current_name, id="new_name_input"),
+            Horizontal(
+                Button("Rename", variant="success", id="rename"),
+                Button("Cancel", variant="error", id="cancel"),
+                classes="button_row"
+            ),
+            classes="modal_dialog"
+        )
+
+    def on_mount(self):
+        # Focus and select all text in input
+        inp = self.query_one("#new_name_input", Input)
+        inp.focus()
+
+    @on(Button.Pressed)
+    def action(self, event):
+        if event.button.id == "rename":
+            new_name = self.query_one("#new_name_input", Input).value.strip()
+            if new_name and new_name != self.current_name:
+                self.dismiss(new_name)
+            else:
+                self.dismiss(None)
+        else:
+            self.dismiss(None)
+
+    @on(Input.Submitted)
+    def on_input_submit(self, event):
+        new_name = event.value.strip()
+        if new_name and new_name != self.current_name:
+            self.dismiss(new_name)
+        else:
+            self.dismiss(None)
