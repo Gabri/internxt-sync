@@ -143,7 +143,8 @@ class InternxtSyncApp(App):
     }
     
     .pane_footer {
-        height: 1;
+        height: auto;
+        max-height: 3;
         background: $boost;
         color: $text-muted;
         padding: 0 1;
@@ -152,17 +153,36 @@ class InternxtSyncApp(App):
     
     .pane_footer Label {
         width: 1fr;
-    }
-    
-    ProgressBar {
-        width: 25;
         height: 1;
-        margin-left: 1;
-        background: $surface-darken-1;
     }
     
-    ProgressBar > .bar {
-        background: $primary;
+    .pane_footer ProgressBar {
+        width: 100%;
+        height: 1;
+        padding: 0;
+        margin: 0;
+    }
+    
+    .pane_footer Bar {
+        width: 1fr;
+    }
+    
+    .pane_footer PercentageStatus {
+        width: 5;
+    }
+    
+    ProgressBar > .bar--bar {
+        color: $primary;
+        background: $primary 30%;
+    }
+    
+    ProgressBar > .bar--indeterminate {
+        color: $primary;
+        background: $secondary;
+    }
+    
+    ProgressBar > .bar--complete {
+        color: $success;
     }
     
     #sync_loader_container {
@@ -200,13 +220,14 @@ class InternxtSyncApp(App):
         ("s", "sync", "Sync Folder Local -> Remote"),
         ("f", "sync_file", "Sync Selected Item(s)"),
         ("d", "download", "Download Remote -> Local"),
-        ("r", "refresh", "Refresh View"),
+        ("ctrl+r", "refresh", "Refresh View"),
         ("ctrl+l", "focus_path", "Edit Path"),
         ("z", "calc_size", "Calc Folder Size"),
         ("m", "toggle_mode", "Toggle CLI/WebDAV"),
         ("delete", "delete_item", "Delete File/Folder"),
         ("n", "create_folder", "New Folder"),
         ("t", "view_trash", "View Trash"),
+        ("r", "rename_item", "Rename File/Folder"),
         ("f2", "rename_item", "Rename File/Folder"),
     ]
 
@@ -495,8 +516,15 @@ class InternxtSyncApp(App):
 
     @work(thread=True)
     def refresh_local(self, path):
-        self.local_path = path
-        self.call_from_thread(self.update_local_input, path)
+        # Resolve symbolic links to their real path
+        try:
+            resolved_path = os.path.realpath(path)
+        except Exception as e:
+            self.log_message(f"Error resolving path: {e}")
+            resolved_path = path
+        
+        self.local_path = resolved_path
+        self.call_from_thread(self.update_local_input, resolved_path)
         tree = self.query_one("#left_pane_tree")
         progress = self.query_one("#left_pane_progress")
         stats_label = self.query_one("#left_pane_stats")
@@ -507,41 +535,59 @@ class InternxtSyncApp(App):
         self.call_from_thread(progress.update, total=100, progress=10)
 
         # Add ".."
-        parent = os.path.dirname(path)
-        if parent != path:  # Not root
+        parent = os.path.dirname(resolved_path)
+        if parent != resolved_path:  # Not root
             self.call_from_thread(
                 tree.root.add, "..", data={"type": "dir", "path": parent, "is_up": True}
             )
 
         try:
-            entries = list(os.scandir(path))
+            entries = list(os.scandir(resolved_path))
             dirs = []
             files = []
             total_size = 0
 
             self.call_from_thread(progress.update, progress=50)
             for entry in entries:
-                if entry.is_dir():
-                    dirs.append(entry)
-                else:
-                    files.append(entry)
-                    total_size += entry.stat().st_size
+                # Build the correct path using resolved_path + entry name
+                correct_path = os.path.join(resolved_path, entry.name)
+                try:
+                    # Use follow_symlinks=False first to detect broken symlinks
+                    if entry.is_symlink():
+                        # Check if symlink target actually exists
+                        target = os.path.realpath(correct_path)
+                        if not os.path.exists(target):
+                            # Broken symlink - show as file with indicator
+                            files.append((f"{entry.name} ⚠️🔗", correct_path, 0))
+                            continue
+                    if entry.is_dir(follow_symlinks=True):
+                        dirs.append((entry.name, correct_path))
+                    else:
+                        try:
+                            size = entry.stat().st_size
+                        except OSError:
+                            size = 0
+                        files.append((entry.name, correct_path, size))
+                        total_size += size
+                except OSError as e:
+                    # Handle any OS errors (permission denied, broken links, etc.)
+                    files.append((f"{entry.name} ⚠️", correct_path, 0))
 
-            dirs.sort(key=lambda e: e.name.lower())
-            files.sort(key=lambda e: e.name.lower())
+            dirs.sort(key=lambda e: e[0].lower())
+            files.sort(key=lambda e: e[0].lower())
 
-            for d in dirs:
+            for name, dir_path in dirs:
                 self.call_from_thread(
                     tree.root.add,
-                    f"📁 {d.name}",
-                    data={"type": "dir", "path": d.path, "is_up": False},
+                    f"📁 {name}",
+                    data={"type": "dir", "path": dir_path, "is_up": False},
                     allow_expand=False,
                 )
-            for f in files:
+            for name, file_path, size in files:
                 self.call_from_thread(
                     tree.root.add,
-                    f"📄 {f.name} ({self._format_size(f.stat().st_size)})",
-                    data={"type": "file", "path": f.path},
+                    f"📄 {name} ({self._format_size(size)})",
+                    data={"type": "file", "path": file_path},
                     allow_expand=False,
                 )
 
@@ -560,11 +606,11 @@ class InternxtSyncApp(App):
 
             self.call_from_thread(set_cursor_first)
 
-            # Reset progress bar after a short delay
+            # Reset progress bar after a longer delay to make it visible
             def reset_progress():
                 progress.update(progress=0)
 
-            self.call_from_thread(self.set_timer, 1.0, reset_progress)
+            self.call_from_thread(self.set_timer, 2.0, reset_progress)
         except Exception as e:
             self.log_message(f"Local Error: {e}")
             self.call_from_thread(progress.update, progress=0)
@@ -578,25 +624,24 @@ class InternxtSyncApp(App):
         progress = self.query_one("#right_pane_progress")
         stats_label = self.query_one("#right_pane_stats")
 
-        # Disable interaction if possible? Textual doesn't have easy 'disabled' for Trees
-        # We can just show loading.
-
         self.call_from_thread(stats_label.update, "Loading remote...")
-        self.call_from_thread(progress.update, total=100, progress=10)
+        # Show indeterminate progress while loading
+        self.call_from_thread(progress.update, total=None)
 
         try:
             items = self.client.list_remote(path)
-            self.call_from_thread(progress.update, progress=100)
+            # Show completion
+            self.call_from_thread(progress.update, total=100, progress=100)
             self.call_from_thread(self.populate_remote_tree, path, items)
 
             def reset_progress():
-                progress.update(progress=0)
+                progress.update(total=100, progress=0)
 
-            self.call_from_thread(self.set_timer, 1.0, reset_progress)
+            self.call_from_thread(self.set_timer, 2.0, reset_progress)
         except Exception as e:
             self.log_message(f"Remote List Error: {e}")
             self.call_from_thread(stats_label.update, "Error loading remote.")
-            self.call_from_thread(progress.update, progress=0)
+            self.call_from_thread(progress.update, total=100, progress=0)
 
     def update_remote_input(self, path):
         self.query_one("#right_pane_input").value = path
@@ -763,25 +808,30 @@ class InternxtSyncApp(App):
         left_progress = self.query_one("#left_pane_progress")
 
         filename = os.path.basename(remote)
-        # Usa un totale fisso per evitare stati inconsistenti
-        self.call_from_thread(progress.update, total=100, progress=0)
-        self.call_from_thread(left_progress.update, total=100, progress=0)
+        
+        # Show progress bars as active
+        self.call_from_thread(progress.update, total=None)  # Indeterminate
+        self.call_from_thread(left_progress.update, total=None)  # Indeterminate
 
         try:
+            self.log_message(f"Starting download: {filename}")
             self.client.download_file(remote, local)
             self.log_message(f"Download complete: {filename}")
+            self.call_from_thread(self.notify, f"Downloaded: {filename}")
             self.call_from_thread(self.refresh_local, self.local_path)
         except Exception as e:
             self.log_message(f"Download error: {e}")
+            self.call_from_thread(self.notify, f"Download failed: {e}", severity="error")
         finally:
+            # Set to 100% briefly to show completion
             self.call_from_thread(progress.update, total=100, progress=100)
             self.call_from_thread(left_progress.update, total=100, progress=100)
 
             def reset():
-                progress.update(progress=0)
-                left_progress.update(progress=0)
+                progress.update(total=100, progress=0)
+                left_progress.update(total=100, progress=0)
 
-            self.call_from_thread(self.set_timer, 1.0, reset)
+            self.call_from_thread(self.set_timer, 2.0, reset)
 
     def run_download_folder_sync(
         self,
@@ -876,10 +926,10 @@ class InternxtSyncApp(App):
             self.call_from_thread(left_progress.update, total=100, progress=100)
 
             def reset():
-                progress.update(progress=0)
-                left_progress.update(progress=0)
+                progress.update(total=100, progress=0)
+                left_progress.update(total=100, progress=0)
 
-            self.call_from_thread(self.set_timer, 1.0, reset)
+            self.call_from_thread(self.set_timer, 2.0, reset)
 
     @work(thread=True)
     def run_download_multiple(self, files_to_download, folders_to_download):
@@ -893,6 +943,7 @@ class InternxtSyncApp(App):
         if total_items == 0:
             return
 
+        # Initialize progress bars with correct total
         self.call_from_thread(right_progress.update, total=total_items, progress=0)
         self.call_from_thread(left_progress.update, total=total_items, progress=0)
 
@@ -904,22 +955,17 @@ class InternxtSyncApp(App):
             local_target = os.path.join(self.local_path, filename)
 
             self.log_message(f"Downloading: {filename}")
-            self.call_from_thread(right_progress.update, progress=completed)
-            self.call_from_thread(left_progress.update, progress=completed)
 
             try:
-                # Mantieni total costante e avanza solo progress
                 self.client.download_file(remote_path, local_target)
                 self.log_message(f"Downloaded: {filename}")
             except Exception as e:
                 self.log_message(f"Error downloading {filename}: {e}")
-            finally:
-                self.call_from_thread(right_progress.update, total=total_items)
-                self.call_from_thread(left_progress.update, total=total_items)
 
             completed += 1
-            self.call_from_thread(right_progress.update, progress=completed)
-            self.call_from_thread(left_progress.update, progress=completed)
+            # Update progress after each file
+            self.call_from_thread(right_progress.update, total=total_items, progress=completed)
+            self.call_from_thread(left_progress.update, total=total_items, progress=completed)
 
         for item in folders_to_download:
             remote_path = item["path"]
@@ -927,8 +973,6 @@ class InternxtSyncApp(App):
             local_target = os.path.join(self.local_path, folder_name)
 
             self.log_message(f"Downloading folder: {folder_name}")
-            self.call_from_thread(right_progress.update, progress=completed)
-            self.call_from_thread(left_progress.update, progress=completed)
 
             try:
                 self.run_download_folder_sync(
@@ -943,18 +987,20 @@ class InternxtSyncApp(App):
                 self.log_message(f"Error downloading folder {folder_name}: {e}")
 
             completed += 1
-            self.call_from_thread(right_progress.update, progress=completed)
-            self.call_from_thread(left_progress.update, progress=completed)
+            # Update progress after each folder
+            self.call_from_thread(right_progress.update, total=total_items, progress=completed)
+            self.call_from_thread(left_progress.update, total=total_items, progress=completed)
 
         self.log_message("All downloads complete")
         self.call_from_thread(self.refresh_local, self.local_path)
 
+        # Show completion
         self.call_from_thread(right_progress.update, total=100, progress=100)
         self.call_from_thread(left_progress.update, total=100, progress=100)
 
         def reset():
-            right_progress.update(progress=0)
-            left_progress.update(progress=0)
+            right_progress.update(total=100, progress=0)
+            left_progress.update(total=100, progress=0)
 
         self.call_from_thread(self.set_timer, 1.0, reset)
 
@@ -1037,10 +1083,12 @@ class InternxtSyncApp(App):
         progress = self.query_one("#left_pane_progress")
         right_progress = self.query_one("#right_pane_progress")
 
+        # Show indeterminate progress
         self.call_from_thread(progress.update, total=None)
         self.call_from_thread(right_progress.update, total=None)
 
         try:
+            self.log_message(f"Uploading: {filename}")
             parent_remote = os.path.dirname(remote_path)
             try:
                 items = self.client.list_remote(parent_remote)
@@ -1069,14 +1117,15 @@ class InternxtSyncApp(App):
             self.log_message(f"Upload error: {e}")
             self.call_from_thread(self.notify, f"Upload failed: {e}", severity="error")
         finally:
+            # Show completion
             self.call_from_thread(progress.update, total=100, progress=100)
             self.call_from_thread(right_progress.update, total=100, progress=100)
 
             def reset():
-                progress.update(progress=0)
-                right_progress.update(progress=0)
+                progress.update(total=100, progress=0)
+                right_progress.update(total=100, progress=0)
 
-            self.call_from_thread(self.set_timer, 1.0, reset)
+            self.call_from_thread(self.set_timer, 2.0, reset)
 
     @work(thread=True)
     def run_sync_analysis(self, local_root, remote_root, exclude_hidden, zip_mode):

@@ -137,7 +137,7 @@ class FileSystemTree(Tree):
             self.tree_id = tree_id
 
 class Pane(Vertical):
-    """A pane containing an input, a tree, and a status bar."""
+    """A pane containing an input, a tree, and a status bar with progress."""
     def __init__(self, title, id, **kwargs):
         super().__init__(id=id, **kwargs)
         self.title = title
@@ -145,8 +145,6 @@ class Pane(Vertical):
     def compose(self):
         yield Input(placeholder=self.title, id=f"{self.id}_input")
         yield FileSystemTree(self.title, id=f"{self.id}_tree")
-        with Horizontal(classes="pane_footer"):
+        with Vertical(classes="pane_footer"):
             yield Label("Files: 0 | Size: 0 B", id=f"{self.id}_stats")
-            progress = ProgressBar(id=f"{self.id}_progress", show_eta=True, show_percentage=True)
-            progress.update(total=100, progress=0)
-            yield progress
+            yield ProgressBar(id=f"{self.id}_progress", show_eta=False, show_percentage=True)
