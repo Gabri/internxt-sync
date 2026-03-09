@@ -3,6 +3,7 @@ from textual.widgets import Header, Footer, Log, Button, ProgressBar, Label, Inp
 from textual.containers import Container, Horizontal, Vertical, Center
 from textual import work, on
 from textual.worker import Worker, get_current_worker
+from textual.reactive import reactive
 
 import os
 import time
@@ -21,7 +22,7 @@ from ui_screens import (
     TrashScreen,
     RenameScreen,
 )
-from ui_widgets import FileSystemTree, Pane
+from ui_widgets import FileSystemTree, Pane, CustomFooter, PathInputWithAutocomplete
 
 
 class InternxtSyncApp(App):
@@ -106,15 +107,86 @@ class InternxtSyncApp(App):
         border: solid $panel;
         background: $surface;
     }
-    
+
     #left_pane:focus-within, #right_pane:focus-within {
         border: solid $primary;
     }
-    
+
     .pane_disabled {
         opacity: 0.5;
     }
-    
+
+    .filter_input {
+        height: 1;
+        border: solid $primary-darken-2;
+        background: $surface-darken-1;
+        color: $text;
+        padding: 0 1;
+        display: none;
+    }
+
+    .filter_input.active {
+        display: block;
+        border: solid $primary;
+    }
+
+    .filter_input:focus {
+        border: solid $primary;
+        background: $surface;
+    }
+
+    .filter_label {
+        height: 1;
+        color: $text-muted;
+        background: $surface-darken-1;
+        padding: 0 1;
+        display: none;
+    }
+
+    .filter_label.active {
+        display: block;
+    }
+
+    .path_dropdown {
+        height: auto;
+        max-height: 10;
+        background: $surface;
+        border: solid $primary;
+        display: none;
+    }
+
+    .path_dropdown ListView {
+        height: auto;
+        max-height: 9;
+        background: $surface;
+        border: none;
+    }
+
+    .path_dropdown ListView > ListItem {
+        height: 1;
+        padding: 0 1;
+        color: $text;
+    }
+
+    .path_dropdown ListView > ListItem:hover {
+        background: $primary 30%;
+    }
+
+    .path_dropdown ListView > ListItem.--highlight {
+        background: $primary;
+        color: $text;
+    }
+
+    Footer {
+        height: auto;
+        min-height: 1;
+        max-height: 2;
+    }
+
+    Footer > .footer--key {
+        text-style: bold;
+    }
+
     FileSystemTree {
         height: 1fr;
     }
@@ -229,6 +301,8 @@ class InternxtSyncApp(App):
         ("t", "view_trash", "View Trash"),
         ("r", "rename_item", "Rename File/Folder"),
         ("f2", "rename_item", "Rename File/Folder"),
+        ("/", "toggle_filter", "Filter Files"),
+        ("escape", "clear_filter", "Clear Filter"),
     ]
 
     def __init__(self):
@@ -289,7 +363,7 @@ class InternxtSyncApp(App):
                     id="sync_progress", show_eta=True, show_percentage=True
                 )
 
-        yield Footer()
+        yield CustomFooter()
 
     def on_mount(self):
         # Disable direct focus on inputs and log
@@ -297,12 +371,22 @@ class InternxtSyncApp(App):
         self.query_one("#right_pane_input").can_focus = False
         self.query_one("#app_log").can_focus = False
 
-        # Configure trees
-        self.query_one("#left_pane_tree").is_remote = False
-        self.query_one("#left_pane_tree").app_ref = self
+        # Disable filter inputs
+        left_filter = self.query_one("#left_pane_filter")
+        right_filter = self.query_one("#right_pane_filter")
+        left_filter.can_focus = False
+        right_filter.can_focus = False
 
-        self.query_one("#right_pane_tree").is_remote = True
-        self.query_one("#right_pane_tree").app_ref = self
+        # Configure trees
+        left_tree = self.query_one("#left_pane_tree")
+        right_tree = self.query_one("#right_pane_tree")
+        left_tree.is_remote = False
+        left_tree.app_ref = self
+        left_tree.set_filter_input(left_filter)
+
+        right_tree.is_remote = True
+        right_tree.app_ref = self
+        right_tree.set_filter_input(right_filter)
 
         # Load local immediately - runs in a worker thread
         self.refresh_local(self.local_path)
@@ -316,6 +400,15 @@ class InternxtSyncApp(App):
             self.push_screen(LoginScreen(), self.after_login)
         else:
             self.start_webdav_and_load()
+
+    def is_tree_focused(self):
+        """Check if tree has focus (for conditional binding display)."""
+        try:
+            left_tree = self.query_one("#left_pane_tree")
+            right_tree = self.query_one("#right_pane_tree")
+            return left_tree.has_focus or right_tree.has_focus
+        except Exception:
+            return False
 
     def after_login(self, should_login):
         if should_login:
@@ -454,16 +547,27 @@ class InternxtSyncApp(App):
     # --- Actions & Navigation ---
 
     def action_toggle_pane(self):
+        left_input = self.query_one("#left_pane_input")
+        right_input = self.query_one("#right_pane_input")
+        
+        active_input = None
+        if left_input.has_focus:
+            active_input = left_input
+        elif right_input.has_focus:
+            active_input = right_input
+            
+        if active_input and hasattr(active_input, '_dropdown') and active_input._dropdown and active_input._dropdown.display:
+            active_input.accept_suggestion()
+            return
+
         left = self.query_one("#left_pane_tree")
         right = self.query_one("#right_pane_tree")
 
         target = right if left.has_focus else left
         target.focus()
 
-        # Auto-select first item ("..") if nothing is selected
         if target.cursor_line == -1 and target.root.children:
             target.cursor_line = 0
-            # Ensure visual selection update
             target.refresh()
 
     def action_focus_path(self):
@@ -487,6 +591,84 @@ class InternxtSyncApp(App):
 
         inp.can_focus = True
         inp.focus()
+        inp.focus()
+
+    def action_toggle_filter(self):
+        """Toggle filter input for the currently focused pane."""
+        left_tree = self.query_one("#left_pane_tree")
+        right_tree = self.query_one("#right_pane_tree")
+
+        # Determine which pane is active
+        if left_tree.has_focus:
+            filter_input = self.query_one("#left_pane_filter")
+            tree = left_tree
+        elif right_tree.has_focus:
+            filter_input = self.query_one("#right_pane_filter")
+            tree = right_tree
+        else:
+            # Default to left pane if neither has focus
+            filter_input = self.query_one("#left_pane_filter")
+            tree = left_tree
+            tree.focus()
+
+        # Show and focus the filter input
+        filter_input.can_focus = True
+        filter_input.add_class("active")
+        filter_input.focus()
+
+    def action_clear_filter(self):
+        """Clear filter and return focus to tree."""
+        left_tree = self.query_one("#left_pane_tree")
+        right_tree = self.query_one("#right_pane_tree")
+
+        # Clear both filters
+        left_filter = self.query_one("#left_pane_filter")
+        right_filter = self.query_one("#right_pane_filter")
+
+        left_filter.value = ""
+        left_filter.remove_class("active")
+        left_filter.can_focus = False
+
+        right_filter.value = ""
+        right_filter.remove_class("active")
+        right_filter.can_focus = False
+
+        left_tree.clear_filter()
+        right_tree.clear_filter()
+
+        # Return focus to active tree
+        if left_tree.has_focus or right_tree.has_focus:
+            pass  # Already focused
+        else:
+            left_tree.focus()
+
+    @on(Input.Changed, "#left_pane_filter")
+    def on_left_filter_changed(self, event):
+        """Handle filter input changes for left pane."""
+        tree = self.query_one("#left_pane_tree")
+        tree.filter_query = event.value
+
+    @on(Input.Changed, "#right_pane_filter")
+    def on_right_filter_changed(self, event):
+        """Handle filter input changes for right pane."""
+        tree = self.query_one("#right_pane_tree")
+        tree.filter_query = event.value
+
+    @on(Input.Submitted, "#left_pane_filter")
+    def on_left_filter_submitted(self, event):
+        """Return focus to tree when filter is submitted."""
+        tree = self.query_one("#left_pane_tree")
+        event.input.remove_class("active")
+        event.input.can_focus = False
+        tree.focus()
+
+    @on(Input.Submitted, "#right_pane_filter")
+    def on_right_filter_submitted(self, event):
+        """Return focus to tree when filter is submitted."""
+        tree = self.query_one("#right_pane_tree")
+        event.input.remove_class("active")
+        event.input.can_focus = False
+        tree.focus()
 
     def action_refresh(self):
         self.refresh_local(self.local_path)
@@ -576,21 +758,40 @@ class InternxtSyncApp(App):
             dirs.sort(key=lambda e: e[0].lower())
             files.sort(key=lambda e: e[0].lower())
 
+            # Store nodes data for filtering
+            nodes_data = []
+
+            # Add ".." to nodes_data if present
+            parent = os.path.dirname(resolved_path)
+            if parent != resolved_path:
+                nodes_data.append({
+                    "label": "..",
+                    "data": {"type": "dir", "path": parent, "is_up": True}
+                })
+
             for name, dir_path in dirs:
+                label = f"📁 {name}"
+                data = {"type": "dir", "path": dir_path, "is_up": False}
+                nodes_data.append({"label": label, "data": data})
                 self.call_from_thread(
                     tree.root.add,
-                    f"📁 {name}",
-                    data={"type": "dir", "path": dir_path, "is_up": False},
+                    label,
+                    data=data,
                     allow_expand=False,
                 )
             for name, file_path, size in files:
+                label = f"📄 {name} ({self._format_size(size)})"
+                data = {"type": "file", "path": file_path}
+                nodes_data.append({"label": label, "data": data})
                 self.call_from_thread(
                     tree.root.add,
-                    f"📄 {name} ({self._format_size(size)})",
-                    data={"type": "file", "path": file_path},
+                    label,
+                    data=data,
                     allow_expand=False,
                 )
 
+            # Store nodes data for filtering
+            self.call_from_thread(tree.store_nodes_data, nodes_data)
             self.call_from_thread(tree.root.expand)
             self.call_from_thread(
                 stats_label.update,
@@ -653,6 +854,9 @@ class InternxtSyncApp(App):
         tree.clear_selection()
         tree.clear()
 
+        # Store nodes data for filtering
+        nodes_data = []
+
         # Add ".."
         if path != "/" and path != "":
             parent = os.path.dirname(path.rstrip("/"))
@@ -660,6 +864,10 @@ class InternxtSyncApp(App):
                 parent = "/" + parent
             if parent == "" or parent == "/":
                 parent = "/"
+            nodes_data.append({
+                "label": "..",
+                "data": {"type": "dir", "path": parent, "is_up": True}
+            })
             tree.root.add("..", data={"type": "dir", "path": parent, "is_up": True})
 
         total_size = 0
@@ -669,11 +877,10 @@ class InternxtSyncApp(App):
             for item in items:
                 name = item["name"]
                 if item["is_dir"]:
-                    tree.root.add(
-                        f"📁 {name}",
-                        data={"type": "dir", "path": item["path"], "is_up": False},
-                        allow_expand=False,
-                    )
+                    label = f"📁 {name}"
+                    data = {"type": "dir", "path": item["path"], "is_up": False}
+                    nodes_data.append({"label": label, "data": data})
+                    tree.root.add(label, data=data, allow_expand=False)
                 else:
                     file_count += 1
                     # Ensure size is int
@@ -682,11 +889,13 @@ class InternxtSyncApp(App):
                     except (ValueError, TypeError):
                         size = 0
                     total_size += size
-                    tree.root.add(
-                        f"📄 {name} ({self._format_size(size)})",
-                        data={"type": "file", "path": item["path"]},
-                        allow_expand=False,
-                    )
+                    label = f"📄 {name} ({self._format_size(size)})"
+                    data = {"type": "file", "path": item["path"]}
+                    nodes_data.append({"label": label, "data": data})
+                    tree.root.add(label, data=data, allow_expand=False)
+
+        # Store nodes data for filtering
+        tree.store_nodes_data(nodes_data)
 
         tree.root.expand()
         stats_label.update(
